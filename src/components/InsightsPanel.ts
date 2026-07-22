@@ -1,0 +1,1160 @@
+import { Panel } from './Panel';
+import { mlWorker } from '@/services/ml-worker';
+import { generateSummary, type SummarizeOptions } from '@/services/summarization';
+import { parallelAnalysis, type AnalyzedHeadline } from '@/services/parallel-analysis';
+import { signalAggregator, type RegionalConvergence } from '@/services/signal-aggregator';
+import { focalPointDetector } from '@/services/focal-point-detector';
+import { stripOrefLabels } from '@/services/oref-alerts';
+import { ingestNewsForCII } from '@/services/country-instability';
+import { getCachedCountryScoreValue } from '@/services/cached-risk-scores';
+import { getTheaterPostureSummaries } from '@/services/military-surge';
+import { getCachedPosture } from '@/services/cached-theater-posture';
+import { isMobileDevice } from '@/utils';
+import { escapeHtml, sanitizeUrl, unsafeRawHtml } from '@/utils/sanitize';
+import { collectBriefSources, normalizeCachedBriefSources, renderBriefSourcesFooter, type BriefSource } from '@/utils/brief-sources';
+import { formatIntelBrief } from '@/utils/format-intel-brief';
+import { SITE_VARIANT } from '@/config';
+import { deletePersistentCache, getPersistentCache, setPersistentCache } from '@/services/persistent-cache';
+import { t } from '@/services/i18n';
+import { showKcgModal } from '@/utils/kcg-modal';
+import { safeHtml, joinSafeHtml } from '@/utils/sanitize';
+import { isDesktopRuntime } from '@/services/runtime';
+import { getAiFlowSettings, isAnyAiProviderEnabled, subscribeAiFlowChange } from '@/services/ai-flow-settings';
+import { getActiveFrameworkForPanel, subscribeFrameworkChange } from '@/services/analysis-framework-store';
+import { hasPremiumAccess } from '@/services/panel-gating';
+import { FrameworkSelector } from './FrameworkSelector';
+import { fetchServerInsights, getServerInsights, type ServerInsights, type ServerInsightStory } from '@/services/insights-loader';
+import { getKcgWatchPreset, KCG_DEFAULT_BRIEFS, type KcgBriefSpec } from '@/services/kcg-presets';
+import { getActiveKcgPreset, KCG_PRESET_CHANGED_EVENT } from '@/services/kcg-active-preset';
+import { toApiUrl } from '@/services/runtime';
+import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
+import { computeISQ, type SignalQuality, type SignalQualityInput } from '@/utils/signal-quality';
+import { extractEntitiesFromTitle } from '@/services/entity-extraction';
+import { getEntityIndex } from '@/services/entity-index';
+
+import type { ClusteredEvent, FocalPoint, MilitaryFlight } from '@/types';
+
+const getAuthoritativeCountryScore = getCachedCountryScoreValue;
+
+/** KCG fork: 주제 브리프의 근거 헤드라인 1건. */
+interface KcgBriefHeadline {
+  title: string;
+  link?: string;
+  source?: string;
+}
+
+export class InsightsPanel extends Panel {
+  private lastBriefUpdate = 0;
+  private cachedBrief: string | null = null;
+  private cachedBriefSources: BriefSource[] = [];
+  private lastMissedStories: AnalyzedHeadline[] = [];
+  private lastConvergenceZones: RegionalConvergence[] = [];
+  private lastFocalPoints: FocalPoint[] = [];
+  private lastMilitaryFlights: MilitaryFlight[] = [];
+  private lastClusters: ClusteredEvent[] = [];
+  private aiFlowUnsubscribe: (() => void) | null = null;
+  private frameworkUnsubscribe: (() => void) | null = null;
+  private fwSelector: FrameworkSelector | null = null;
+  private updateGeneration = 0;
+  private static readonly BRIEF_COOLDOWN_MS = 120000; // 2 min cooldown (API has limits)
+  // KCG fork: lang-suffixed so a brief cached in one UI language is never
+  // served in another (pre-fix: an English brief cached before the Korean
+  // locale landed kept showing forever).
+  private static readonly BRIEF_CACHE_KEY = 'summary:world-brief:ko';
+  // #4928: the server synthesis cites up to 12 sources — capping the cached
+  // list at the legacy 6 orphans [7]/[8] citations on the early paint (#4890)
+  // and client cooldown renders. Keep read + write on this shared bound.
+  private static readonly BRIEF_CACHE_MAX_SOURCES = 12;
+
+  constructor() {
+    super({
+      id: 'insights',
+      title: t('panels.insights'),
+      showCount: false,
+      infoTooltip: t('components.insights.infoTooltip'),
+    });
+
+    // Web-only: subscribe to AI flow changes so toggling providers re-runs analysis
+    // Skip on mobile — only server-side insights are used there (no client-side AI)
+    if (!isDesktopRuntime() && !isMobileDevice()) {
+      this.aiFlowUnsubscribe = subscribeAiFlowChange((changedKey) => {
+        if (changedKey === 'mapNewsFlash') return;
+        void this.onAiFlowChanged();
+      });
+    }
+
+    this.frameworkUnsubscribe = subscribeFrameworkChange('insights', () => {
+      void this.updateInsights(this.lastClusters);
+    });
+
+    this.fwSelector = new FrameworkSelector({ panelId: 'insights', isPremium: hasPremiumAccess(), panel: this, note: t('components.insights.frameworkNote') });
+    this.header.appendChild(this.fwSelector.el);
+
+    // #4890: the World Brief text is the field LCP element in ~1/3 of desktop
+    // views but normally paints only after clusters + hydration + sentiment
+    // complete (p75 ~4.3s). Repeat visitors already have the previous brief in
+    // the persistent cache — paint it with the shell so the LCP text lands in
+    // the first paint window; the first real update pass overwrites it.
+    void this.paintCachedBriefEarly();
+
+    // KCG fork: 속보&확인됨 항목 클릭 → 원문 기사 열기 (사장님 피드백 07-21)
+    this.content.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('a, details, summary, button')) return;
+      const storyEl = target.closest('.insight-story') as HTMLElement | null;
+      if (storyEl?.dataset.link) {
+        window.open(storyEl.dataset.link, '_blank', 'noopener');
+        return;
+      }
+      // 주제 브리프 카드 클릭 → 전문+근거 기사 모달 (사장님 요청 07-21 2차)
+      const briefEl = target.closest('.kcg-topic-brief') as HTMLElement | null;
+      if (briefEl?.dataset.kcgBrief) {
+        this.openKcgBriefModal(briefEl.dataset.kcgBrief);
+        return;
+      }
+    });
+
+    // KCG fork: 감시 프리셋 전환 → 브리프 카드 구성을 해당 주제로 통째 교체
+    window.addEventListener(KCG_PRESET_CHANGED_EVENT, this.onKcgPresetChanged);
+    if (getActiveKcgPreset()) void this.refreshKcgPresetBriefs();
+    // 프리셋 브리프는 digest 주기(20분)와 무관하게 10분마다 재수급(요약은 sig 캐시)
+    this.kcgPresetBriefTimer = setInterval(() => {
+      if (getActiveKcgPreset()) void this.refreshKcgPresetBriefs();
+    }, 10 * 60_000);
+
+    // KCG fork: 세계 브리프 클릭 → 전문+출처 모달 (링크·Sources 토글 클릭은 제외)
+    this.content.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('a, details, summary, button')) return;
+      if (!target.closest('.insights-brief')) return;
+      if (!this.cachedBrief) return;
+      const sources = this.cachedBriefSources ?? [];
+      showKcgModal('세계 브리프 — 전문', safeHtml`
+        <div style="font-size:13.5px;line-height:1.8;margin-bottom:14px">${this.cachedBrief}</div>
+        ${sources.length ? safeHtml`
+          <div style="color:#7fd4ff;font-weight:600;margin-bottom:6px">출처 (${String(sources.length)})</div>
+          <ul style="padding-left:18px;line-height:1.8">${joinSafeHtml(sources.map((src) => {
+            const url = typeof src.url === 'string' && /^https?:\/\//.test(src.url) ? src.url : '';
+            return url
+              ? safeHtml`<li><a href="${url}" target="_blank" rel="noopener" style="color:#8fc6e8">${src.title || src.source || url}</a> <span style="color:#789;font-size:11px">${src.source ?? ''}</span></li>`
+              : safeHtml`<li>${src.title || src.source || ''}</li>`;
+          }))}</ul>` : safeHtml``}
+      `);
+    });
+    this.content.style.cursor = 'default';
+  }
+
+  public setMilitaryFlights(flights: MilitaryFlight[]): void {
+    this.lastMilitaryFlights = flights;
+  }
+
+  // ── KCG fork: 주제별 브리프 카드 — 활성 감시 프리셋을 따라 카드 구성이
+  // 통째로 바뀐다(기본=국내/해양·안보, 해양 탭=해양/재난/안보, 공중 탭=항공/안보 …).
+  // 카드 클릭 → 전문+근거 헤드라인 모달. 사장님 요청 07-21 2차.
+  private kcgTopicBriefs: Record<string, { text: string; items: KcgBriefHeadline[] }> = {};
+  private kcgBriefInFlight = new Set<string>();
+  private kcgPresetBriefTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly onKcgPresetChanged = (): void => {
+    this.rerenderKcgBriefsBlock();
+    void this.refreshKcgPresetBriefs();
+  };
+
+  private currentKcgBriefSpecs(): readonly KcgBriefSpec[] {
+    const preset = getKcgWatchPreset(getActiveKcgPreset());
+    return preset ? preset.briefs : KCG_DEFAULT_BRIEFS;
+  }
+
+  /** data-loader 가 digest 카테고리(politics/intel) 헤드라인을 공급하는 경로. */
+  public setKcgTopicHeadlines(topics: Record<string, KcgBriefHeadline[]>): void {
+    for (const [key, heads] of Object.entries(topics)) {
+      this.maybeSummarizeKcgTopic(key, heads ?? []);
+    }
+  }
+
+  /** 프리셋 브리프 — api/kcg-breaking 에서 주제 헤드라인을 직접 수급. */
+  private async refreshKcgPresetBriefs(): Promise<void> {
+    const specs = this.currentKcgBriefSpecs().filter((spec) => spec.fromBreaking);
+    await Promise.allSettled(specs.map(async (spec) => {
+      const resp = await fetch(
+        toApiUrl(`/api/kcg-breaking?topic=${spec.key}`),
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      if (!resp.ok) return;
+      const data = await resp.json() as { items?: Array<{ title: string; link?: string; source?: string }> };
+      const heads = (data.items ?? [])
+        .filter((item) => item?.title)
+        .slice(0, 8)
+        .map((item) => ({ title: item.title, link: item.link, source: item.source }));
+      this.maybeSummarizeKcgTopic(spec.key, heads);
+    }));
+  }
+
+  private maybeSummarizeKcgTopic(key: string, heads: KcgBriefHeadline[]): void {
+    if (!heads.length || this.kcgBriefInFlight.has(key)) return;
+    const titles = heads.map((h) => h.title);
+    const sig = JSON.stringify(titles.slice(0, 5));
+    const cacheKey = `kcg_topic_brief_${key}`;
+    try {
+      const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null') as { sig: string; at: number; text: string; items?: KcgBriefHeadline[] } | null;
+      if (cached && cached.sig === sig && Date.now() - cached.at < 20 * 60_000) {
+        this.kcgTopicBriefs[key] = { text: cached.text, items: cached.items ?? heads };
+        this.updateKcgBriefDom(key);
+        return;
+      }
+    } catch { /* ignore */ }
+    this.kcgBriefInFlight.add(key);
+    generateSummary(titles.slice(0, 8), undefined, `kcg-${key}`, 'ko')
+      .then((res) => {
+        if (!res?.summary) return;
+        this.kcgTopicBriefs[key] = { text: res.summary, items: heads };
+        try { localStorage.setItem(cacheKey, JSON.stringify({ sig, at: Date.now(), text: res.summary, items: heads })); } catch { /* quota */ }
+        this.updateKcgBriefDom(key);
+      })
+      .catch(() => { /* 다음 주기에 재시도 */ })
+      .finally(() => this.kcgBriefInFlight.delete(key));
+  }
+
+  private renderKcgTopicBriefs(): string {
+    const cards = this.currentKcgBriefSpecs().map((spec) => `
+      <div class="insights-section kcg-topic-brief" data-kcg-brief="${escapeHtml(spec.key)}">
+        <div class="insights-section-title">${escapeHtml(spec.title)} <span style="font-size:9.5px;color:#6b8496;font-weight:400">클릭=전문</span></div>
+        <div class="kcg-topic-brief-text" style="font-size:12.5px;line-height:1.7;color:#cfe0ec">${this.kcgTopicBriefs[spec.key]?.text ? escapeHtml(this.kcgTopicBriefs[spec.key]!.text) : '<span style="color:#789">요약 준비 중…</span>'}</div>
+      </div>`).join('');
+    return `<div class="kcg-topic-briefs-wrap">${cards}</div>`;
+  }
+
+  private updateKcgBriefDom(key: string): void {
+    const el = this.content.querySelector(`[data-kcg-brief="${CSS.escape(key)}"] .kcg-topic-brief-text`);
+    if (el) el.textContent = this.kcgTopicBriefs[key]?.text ?? '';
+  }
+
+  /** 프리셋 전환 시 카드 블록을 제자리에서 새 주제 구성으로 교체. */
+  private rerenderKcgBriefsBlock(): void {
+    const wrap = this.content.querySelector('.kcg-topic-briefs-wrap');
+    if (!wrap) return;
+    const tmp = document.createElement('div');
+    setTrustedHtml(tmp, trustedHtml(this.renderKcgTopicBriefs(), 'renderKcgTopicBriefs() escapes all interpolations'));
+    const next = tmp.firstElementChild;
+    if (next) wrap.replaceWith(next);
+  }
+
+  private openKcgBriefModal(key: string): void {
+    const spec = this.currentKcgBriefSpecs().find((s) => s.key === key);
+    const entry = this.kcgTopicBriefs[key];
+    const title = spec?.title ?? '주제 브리프';
+    if (!entry?.text) {
+      showKcgModal(title, safeHtml`<div style="color:#9ab">아직 요약이 준비되지 않았어요 — 잠시 후 다시 열어보세요.</div>`);
+      return;
+    }
+    const items = entry.items ?? [];
+    showKcgModal(title, safeHtml`
+      <div style="font-size:13.5px;line-height:1.8;margin-bottom:14px">${entry.text}</div>
+      ${items.length ? safeHtml`
+        <div style="color:#7fd4ff;font-weight:600;margin-bottom:6px">근거 기사 (${String(items.length)})</div>
+        <ul style="padding-left:18px;line-height:1.8">${joinSafeHtml(items.map((item) => {
+          const url = typeof item.link === 'string' && /^https?:\/\//.test(item.link) ? item.link : '';
+          return url
+            ? safeHtml`<li><a href="${url}" target="_blank" rel="noopener" style="color:#8fc6e8">${item.title}</a> <span style="color:#789;font-size:11px">${item.source ?? ''}</span></li>`
+            : safeHtml`<li>${item.title} <span style="color:#789;font-size:11px">${item.source ?? ''}</span></li>`;
+        }))}</ul>` : safeHtml``}
+    `);
+  }
+
+  private getTheaterPostureContext(): string {
+    const cachedPostures = getCachedPosture()?.postures;
+    const postures = cachedPostures?.length
+      ? cachedPostures
+      : (this.lastMilitaryFlights.length > 0 ? getTheaterPostureSummaries(this.lastMilitaryFlights) : []);
+
+    const significant = postures.filter(
+      (p) => p.postureLevel === 'critical' || p.postureLevel === 'elevated' || p.strikeCapable
+    );
+
+    if (significant.length === 0) {
+      return '';
+    }
+
+    const lines = significant.map((p) => {
+      const parts: string[] = [];
+      parts.push(`${p.theaterName}: ${p.totalAircraft} aircraft`);
+      parts.push(`(${p.postureLevel.toUpperCase()})`);
+      if (p.strikeCapable) parts.push('STRIKE CAPABLE');
+      parts.push(`- ${p.summary}`);
+      if (p.targetNation) parts.push(`Focus: ${p.targetNation}`);
+      return parts.join(' ');
+    });
+
+    return `\n\nCRITICAL MILITARY POSTURE:\n${lines.join('\n')}`;
+  }
+
+
+  private async loadBriefFromCache(): Promise<boolean> {
+    if (this.cachedBrief) return false;
+    const entry = await getPersistentCache<{ summary: string; sources?: BriefSource[] }>(InsightsPanel.BRIEF_CACHE_KEY);
+    if (!entry?.data?.summary) return false;
+    const { sources, legacySourceShape } = normalizeCachedBriefSources(entry.data, InsightsPanel.BRIEF_CACHE_MAX_SOURCES);
+    if (legacySourceShape) {
+      void deletePersistentCache(InsightsPanel.BRIEF_CACHE_KEY);
+      return false;
+    }
+    this.cachedBrief = entry.data.summary;
+    this.cachedBriefSources = sources;
+    this.lastBriefUpdate = entry.updatedAt;
+    return true;
+  }
+
+  /**
+   * #4890: early-paint the persisted World Brief at construction time so the
+   * LCP text block exists at shell paint instead of after the full insights
+   * pipeline. Generation guards on BOTH sides of the async cache read keep
+   * this from clobbering a real updateInsights() pass that races the
+   * IndexedDB read (updateInsights bumps updateGeneration synchronously on
+   * entry, so a stale early paint can never land on top of real content).
+   */
+  private async paintCachedBriefEarly(): Promise<void> {
+    if (this.updateGeneration > 0) return;
+    await this.loadBriefFromCache();
+    if (this.updateGeneration > 0 || !this.cachedBrief) return;
+    this.setDataBadge('cached');
+    this.setSafeContent(unsafeRawHtml(
+      this.renderWorldBrief(this.cachedBrief, this.cachedBriefSources),
+      'renderWorldBrief escapes the cached summary (#4890 early brief paint)',
+    ));
+  }
+
+  private extractISQInput(cluster: ClusteredEvent): SignalQualityInput {
+    const entities = extractEntitiesFromTitle(cluster.primaryTitle);
+    const idx = getEntityIndex();
+    // Keyword matches (confidence 0.7) are ambiguous for shared-actor terms like
+    // "hezbollah" (→ IR + IL) or "hamas" (→ IL + QA). Only trust alias matches
+    // (direct country name mention, confidence ≥ 0.85) for ISQ country attribution.
+    const countryEntity = entities.find(
+      e => e.matchType === 'alias' && idx.byId.get(e.entityId)?.type === 'country'
+    );
+    return {
+      sourceCount: cluster.sourceCount,
+      isAlert: cluster.isAlert,
+      sourceTier: cluster.topSources?.[0]?.tier ?? undefined,
+      threatLevel: cluster.threat?.level ?? undefined,
+      velocity: cluster.velocity ?? undefined,
+      countryCode: countryEntity?.entityId ?? null,
+    };
+  }
+
+  private selectTopStories(
+    clusters: ClusteredEvent[],
+    maxCount: number,
+    focalFn: (code: string) => { focalScore: number; urgency: string } | null,
+    ciiFn: (code: string) => number | null,
+    isFocalReadyFn: () => boolean,
+  ): Array<{ cluster: ClusteredEvent; isq: SignalQuality }> {
+    const allScored = clusters.map(c => ({
+      cluster: c,
+      isq: computeISQ(this.extractISQInput(c), focalFn, ciiFn, isFocalReadyFn),
+    }));
+
+    const candidates = allScored.filter(({ cluster: c, isq }) =>
+      c.sourceCount >= 2 ||
+      c.isAlert ||
+      (c.velocity && c.velocity.level !== 'normal') ||
+      isq.composite > 0.55 ||
+      isq.tier === 'strong'
+    );
+
+    const sorted = candidates.sort((a, b) => b.isq.composite - a.isq.composite);
+
+    const selected: Array<{ cluster: ClusteredEvent; isq: SignalQuality }> = [];
+    const sourceCount = new Map<string, number>();
+    const MAX_PER_SOURCE = 3;
+
+    for (const item of sorted) {
+      const source = item.cluster.primarySource;
+      const count = sourceCount.get(source) ?? 0;
+      if (count < MAX_PER_SOURCE) {
+        selected.push(item);
+        sourceCount.set(source, count + 1);
+      }
+      if (selected.length >= maxCount) break;
+    }
+
+    return selected;
+  }
+
+  private setProgress(step: number, total: number, message: string): void {
+    const percent = Math.round((step / total) * 100);
+    this.setSafeContent(unsafeRawHtml(`
+      <div class="insights-progress">
+        <div class="insights-progress-bar">
+          <div class="insights-progress-fill" style="width: ${percent}%"></div>
+        </div>
+        <div class="insights-progress-info">
+          <span class="insights-progress-step">${t('components.insights.step', { step: String(step), total: String(total) })}</span>
+          <span class="insights-progress-message">${message}</span>
+        </div>
+      </div>
+    `, 'legacy Panel.setContent() migration'));
+  }
+
+  public async updateInsights(clusters: ClusteredEvent[]): Promise<void> {
+    this.lastClusters = clusters;
+    this.updateGeneration++;
+    const thisGeneration = this.updateGeneration;
+
+    // Try server-side pre-computed insights first (instant, works even without clusters)
+    let serverInsights = getServerInsights();
+    if (!serverInsights) {
+      // Bootstrap hydration miss (mobile fast-tier abort on 4G, stale cache,
+      // or single-shot getHydratedData already consumed). On-demand refetch
+      // via the bootstrap key-filter endpoint covers all three cases —
+      // critical for mobile where the client-side LLM fallback is gated off,
+      // and a free win for desktop (no client LLM cost when server data is
+      // recoverable). Mirrors the AAIISentimentPanel pattern.
+      if (this.updateGeneration !== thisGeneration) return;
+      serverInsights = await fetchServerInsights();
+      if (this.updateGeneration !== thisGeneration) return;
+    }
+    if (serverInsights) {
+      await this.updateFromServer(serverInsights, clusters, thisGeneration);
+      return;
+    }
+
+    if (clusters.length === 0) {
+      this.setDataBadge('unavailable');
+      this.setSafeContent(unsafeRawHtml(`<div class="insights-empty">${t('components.insights.waitingForData')}</div>`, 'legacy Panel.setContent() migration'));
+      return;
+    }
+
+    // Fallback: full client-side pipeline (skip on mobile — too heavy)
+    if (isMobileDevice()) {
+      this.setDataBadge('unavailable');
+      this.setSafeContent(unsafeRawHtml(`<div class="insights-empty">${t('components.insights.waitingForData')}</div>`, 'legacy Panel.setContent() migration'));
+      return;
+    }
+    await this.updateFromClient(clusters, thisGeneration);
+  }
+
+  private async updateFromServer(
+    serverInsights: ServerInsights,
+    clusters: ClusteredEvent[],
+    thisGeneration: number,
+  ): Promise<void> {
+    const totalSteps = 2;
+
+    try {
+      // Clear stale ML-detected stories when clusters are empty (e.g. clustering
+      // failed) so unrelated missed stories don't render next to server insights
+      if (clusters.length === 0) {
+        this.lastMissedStories = [];
+      }
+
+      // Step 1: Signal aggregation (client-side, depends on real-time map data)
+      this.setProgress(1, totalSteps, t('components.insights.loadingServerInsights'));
+
+      let signalSummary: ReturnType<typeof signalAggregator.getSummary>;
+      let focalSummary: ReturnType<typeof focalPointDetector.analyze>;
+
+      if (SITE_VARIANT === 'full') {
+        const _cp = getCachedPosture()?.postures;
+        const theaterPostures = _cp?.length
+          ? _cp
+          : (this.lastMilitaryFlights.length > 0 ? getTheaterPostureSummaries(this.lastMilitaryFlights) : []);
+        if (theaterPostures.length > 0) {
+          signalAggregator.ingestTheaterPostures(theaterPostures);
+        }
+        signalSummary = signalAggregator.getSummary();
+        this.lastConvergenceZones = signalSummary.convergenceZones;
+        focalSummary = focalPointDetector.analyze(clusters, signalSummary);
+        this.lastFocalPoints = focalSummary.focalPoints;
+        if (focalSummary.focalPoints.length > 0) {
+          ingestNewsForCII(clusters);
+          window.dispatchEvent(new CustomEvent('focal-points-ready'));
+        }
+      } else {
+        this.lastConvergenceZones = [];
+        this.lastFocalPoints = [];
+      }
+
+      if (this.updateGeneration !== thisGeneration) return;
+
+      // Step 2: Re-sort server stories by ISQ (shallow copy to avoid mutating cache)
+      this.setProgress(2, totalSteps, t('components.insights.analyzingSentiment'));
+      const focalFnServer = (code: string) => {
+        const fp = focalPointDetector.getFocalPointForCountry(code);
+        return (fp && (fp.signalCount > 0 || fp.signalTypes.includes('active_strike'))) ? fp : null;
+      };
+      const isFocalReadyServer = () => (focalPointDetector.getLastSummary()?.topCountries.some(
+        fp => fp.signalCount > 0 || fp.signalTypes.includes('active_strike')
+      ) ?? false);
+      const sortedStories = [...serverInsights.topStories].sort((a, b) => {
+        const isqA = computeISQ(
+          { sourceCount: a.sourceCount, isAlert: a.isAlert, threatLevel: a.threatLevel ?? undefined, countryCode: a.countryCode, velocity: a.velocity },
+          focalFnServer, getAuthoritativeCountryScore, isFocalReadyServer,
+        );
+        const isqB = computeISQ(
+          { sourceCount: b.sourceCount, isAlert: b.isAlert, threatLevel: b.threatLevel ?? undefined, countryCode: b.countryCode, velocity: b.velocity },
+          focalFnServer, getAuthoritativeCountryScore, isFocalReadyServer,
+        );
+        return isqB.composite - isqA.composite;
+      });
+
+      // Sentiment classification uses positional indexing — must happen AFTER re-sort
+      const titles = sortedStories.slice(0, 5).map(s => s.primaryTitle);
+      let sentiments: Array<{ label: string; score: number }> | null = null;
+      if (mlWorker.isAvailable) {
+        sentiments = await mlWorker.classifySentiment(titles).catch(() => null);
+      }
+
+      if (this.updateGeneration !== thisGeneration) return;
+
+      this.setDataBadge('live');
+      this.renderServerInsights({ ...serverInsights, topStories: sortedStories }, sentiments);
+    } catch (error) {
+      console.error('[InsightsPanel] Server path error, falling back:', error);
+      await this.updateFromClient(clusters, thisGeneration);
+    }
+  }
+
+  private async updateFromClient(clusters: ClusteredEvent[], thisGeneration: number): Promise<void> {
+    // Web-only: if no AI providers enabled, show disabled state
+    if (!isDesktopRuntime() && !isAnyAiProviderEnabled()) {
+      this.setDataBadge('unavailable');
+      this.renderDisabledState();
+      return;
+    }
+
+    // Build summarize options from AI flow settings (web) or defaults (desktop)
+    const aiFlow = isDesktopRuntime() ? { cloudLlm: true, browserModel: true } : getAiFlowSettings();
+    const summarizeOpts: SummarizeOptions = {
+      skipCloudProviders: !aiFlow.cloudLlm,
+      skipBrowserFallback: !aiFlow.browserModel,
+    };
+
+    const totalSteps = 4;
+
+    try {
+      // Step 1: Signal aggregation + focal point detection (must run BEFORE ranking)
+      this.setProgress(1, totalSteps, t('components.insights.rankingStories'));
+
+      // Run parallel multi-perspective analysis in background
+      const parallelPromise = parallelAnalysis.analyzeHeadlines(clusters).then(report => {
+        this.lastMissedStories = report.missedByKeywords;
+      }).catch(err => {
+        console.warn('[ParallelAnalysis] Error:', err);
+      });
+
+      let signalSummary: ReturnType<typeof signalAggregator.getSummary>;
+      let focalSummary: ReturnType<typeof focalPointDetector.analyze>;
+
+      if (SITE_VARIANT === 'full') {
+        const _cp = getCachedPosture()?.postures;
+        const theaterPostures = _cp?.length
+          ? _cp
+          : (this.lastMilitaryFlights.length > 0 ? getTheaterPostureSummaries(this.lastMilitaryFlights) : []);
+        if (theaterPostures.length > 0) {
+          signalAggregator.ingestTheaterPostures(theaterPostures);
+        }
+        signalSummary = signalAggregator.getSummary();
+        this.lastConvergenceZones = signalSummary.convergenceZones;
+        focalSummary = focalPointDetector.analyze(clusters, signalSummary);
+        this.lastFocalPoints = focalSummary.focalPoints;
+        if (focalSummary.focalPoints.length > 0) {
+          ingestNewsForCII(clusters);
+          window.dispatchEvent(new CustomEvent('focal-points-ready'));
+        }
+      } else {
+        signalSummary = {
+          timestamp: new Date(),
+          totalSignals: 0,
+          byType: {} as Record<string, number>,
+          convergenceZones: [],
+          topCountries: [],
+          aiContext: '',
+        };
+        focalSummary = {
+          focalPoints: [],
+          aiContext: '',
+          timestamp: new Date(),
+          topCountries: [],
+          topCompanies: [],
+        };
+        this.lastConvergenceZones = [];
+        this.lastFocalPoints = [];
+      }
+
+      // Rank stories with fresh focal + CII context
+      const focalFn = (code: string) => {
+        const fp = focalPointDetector.getFocalPointForCountry(code);
+        return (fp && (fp.signalCount > 0 || fp.signalTypes.includes('active_strike'))) ? fp : null;
+      };
+      const isFocalReady = () => (focalPointDetector.getLastSummary()?.topCountries.some(
+        fp => fp.signalCount > 0 || fp.signalTypes.includes('active_strike')
+      ) ?? false);
+      const importantItems = this.selectTopStories(clusters, 8, focalFn, getAuthoritativeCountryScore, isFocalReady);
+      const importantClusters = importantItems.map(({ cluster }) => cluster);
+
+      if (importantClusters.length === 0) {
+        this.setSafeContent(unsafeRawHtml(`<div class="insights-empty">${t('components.insights.noStories')}</div>`, 'legacy Panel.setContent() migration'));
+        return;
+      }
+
+      // Cap titles sent to AI at 5 to reduce entity conflation in small models
+      // Strip OREF translation labels (ALERT[id]:, AREAS[id]:) that may leak into cluster titles
+      const titles = importantClusters.slice(0, 5).map(c => stripOrefLabels(c.primaryTitle));
+      const currentBriefSources = collectBriefSources(
+        importantClusters.slice(0, 5).map((cluster) => ({
+          primaryTitle: stripOrefLabels(cluster.primaryTitle),
+          primarySource: cluster.primarySource,
+          primaryLink: cluster.primaryLink,
+          pubDate: cluster.lastUpdated,
+        })),
+        6,
+      );
+
+      // Step 2: Analyze sentiment (browser-based, fast)
+      this.setProgress(2, totalSteps, t('components.insights.analyzingSentiment'));
+      let sentiments: Array<{ label: string; score: number }> | null = null;
+
+      if (mlWorker.isAvailable) {
+        sentiments = await mlWorker.classifySentiment(titles).catch(() => null);
+      }
+      if (this.updateGeneration !== thisGeneration) return;
+
+      // Step 3: Generate World Brief (with cooldown)
+      await this.loadBriefFromCache();
+      if (this.updateGeneration !== thisGeneration) return;
+
+      let worldBrief = this.cachedBrief;
+      const now = Date.now();
+
+      if (!worldBrief || now - this.lastBriefUpdate > InsightsPanel.BRIEF_COOLDOWN_MS) {
+        this.setProgress(3, totalSteps, t('components.insights.generatingBrief'));
+
+        // Pass focal point context + theater posture to AI for correlation-aware summarization
+        // Tech variant: no geopolitical context, just tech news summarization
+        // Commodity variant: commodities-specific framing for gold/metals/energy markets
+        // Energy variant: energy-specific framing — pipelines, chokepoints, shortages, disruptions
+        const theaterContext = SITE_VARIANT === 'full' ? this.getTheaterPostureContext() : '';
+        let geoContext = SITE_VARIANT === 'full'
+          ? (focalSummary.aiContext || signalSummary.aiContext) + theaterContext
+          : SITE_VARIANT === 'commodity'
+            ? 'You are generating a commodities market brief. Focus on gold and precious metals price movements, mining supply risks, energy market dynamics, and macro factors driving commodity prices. Highlight supply disruptions, geopolitical risks to mining regions, central bank gold activity, and USD/inflation trends.'
+            : SITE_VARIANT === 'energy'
+              ? 'You are generating a global energy-intelligence brief. Focus on physical supply: oil & gas pipeline status and disruptions (Druzhba, Nord Stream, TurkStream, Power of Siberia, CPC), chokepoint flow (Hormuz, Malacca, Suez, Bab el-Mandeb, Turkish Straits, Danish Straits, Panama), storage levels (EU gas, US SPR, IEA stocks, days-of-cover), fuel shortages (jet / petrol / diesel / heating oil), refinery outages, LNG flows, OPEC+ production signals, and sanctions impacts. Prefer physical constraints and evidence-grounded status changes over price commentary. Attribute every flow figure to its source (AIS calibration, operator disclosure, regulator data) — never ship a bare conclusion.'
+              : '';
+        const insightsFw = getActiveFrameworkForPanel('insights');
+        if (insightsFw) {
+          geoContext = `${geoContext}\n\n---\nAnalytical Framework:\n${insightsFw.systemPromptAppend}`;
+        }
+        const result = await generateSummary(titles, (_step, _total, msg) => {
+          // Show sub-progress for summarization
+          this.setProgress(3, totalSteps, t('components.insights.generatingBriefSub', { msg }));
+        }, geoContext, undefined, summarizeOpts);
+
+        if (this.updateGeneration !== thisGeneration) return;
+
+        if (result) {
+          worldBrief = result.summary;
+          this.cachedBrief = worldBrief;
+          this.cachedBriefSources = currentBriefSources;
+          this.lastBriefUpdate = now;
+          void setPersistentCache(InsightsPanel.BRIEF_CACHE_KEY, { summary: worldBrief, sources: currentBriefSources });
+        }
+      } else {
+        this.setProgress(3, totalSteps, t('components.insights.usingCachedBrief'));
+      }
+
+      this.setDataBadge(worldBrief ? 'live' : 'unavailable');
+
+      // Step 4: Wait for parallel analysis to complete
+      this.setProgress(4, totalSteps, t('components.insights.multiPerspectiveAnalysis'));
+      await parallelPromise;
+
+      if (this.updateGeneration !== thisGeneration) return;
+
+      this.renderInsights(
+        importantItems,
+        sentiments,
+        worldBrief,
+        this.cachedBriefSources.length > 0 ? this.cachedBriefSources : currentBriefSources,
+      );
+    } catch (error) {
+      console.error('[InsightsPanel] Error:', error);
+      this.showError();
+    }
+  }
+
+  private renderInsights(
+    items: Array<{ cluster: ClusteredEvent; isq: SignalQuality }>,
+    sentiments: Array<{ label: string; score: number }> | null,
+    worldBrief: string | null,
+    worldBriefSources: BriefSource[] = [],
+  ): void {
+    const clusters = items.map(({ cluster }) => cluster);
+    const briefHtml = worldBrief ? this.renderWorldBrief(worldBrief, worldBriefSources) : '';
+    const focalPointsHtml = this.renderFocalPoints();
+    const convergenceHtml = this.renderConvergenceZones();
+    const sentimentOverview = this.renderSentimentOverview(sentiments);
+    const breakingHtml = this.renderBreakingStories(items, sentiments);
+    const statsHtml = this.renderStats(clusters);
+    const missedHtml = this.renderMissedStories();
+
+    this.setSafeContent(unsafeRawHtml(`
+      ${briefHtml}
+      ${this.renderKcgTopicBriefs()}
+      ${focalPointsHtml}
+      ${convergenceHtml}
+      ${sentimentOverview}
+      ${statsHtml}
+      <div class="insights-section">
+        <div class="insights-section-title">${t('components.insights.breakingConfirmed')}</div>
+        ${breakingHtml}
+      </div>
+      ${missedHtml}
+    `, 'legacy Panel.setContent() migration'));
+  }
+
+  private renderServerInsights(
+    insights: ServerInsights,
+    sentiments: Array<{ label: string; score: number }> | null,
+  ): void {
+    // #4928 external review: the synthesis cites up to 8 stories — a
+    // 6-source cap orphaned [7]/[8]. Cap to the payload's own citation
+    // index space (bounded at 12 defensively).
+    const worldBriefSources = collectBriefSources(
+      insights.worldBriefSources ?? [],
+      Math.min(12, Math.max(6, insights.worldBriefSources?.length ?? 6)),
+    );
+    const briefHtml = insights.worldBrief
+      ? this.renderWorldBrief(insights.worldBrief, worldBriefSources, this.renderBriefExtras(insights))
+      : '';
+    if (insights.worldBrief) {
+      // #4890: keep the persistent brief cache warm from the dominant server
+      // path (previously only the client-LLM fallback wrote it, so repeat
+      // visitors had an empty cache and nothing to early-paint at boot).
+      this.cachedBrief = insights.worldBrief;
+      this.cachedBriefSources = worldBriefSources;
+      this.lastBriefUpdate = Date.now();
+      void setPersistentCache(InsightsPanel.BRIEF_CACHE_KEY, { summary: insights.worldBrief, sources: this.cachedBriefSources });
+    }
+    const focalPointsHtml = this.renderFocalPoints();
+    const convergenceHtml = this.renderConvergenceZones();
+    const sentimentOverview = this.renderSentimentOverview(sentiments);
+    const storiesHtml = this.renderServerStories(insights.topStories, sentiments);
+    const statsHtml = this.renderServerStats(insights);
+    const provenanceHtml = this.renderProvenance(insights);
+    const missedHtml = this.renderMissedStories();
+
+    this.setSafeContent(unsafeRawHtml(`
+      ${briefHtml}
+      ${this.renderKcgTopicBriefs()}
+      ${focalPointsHtml}
+      ${convergenceHtml}
+      ${sentimentOverview}
+      ${statsHtml}
+      ${provenanceHtml}
+      <div class="insights-section">
+        <div class="insights-section-title">${t('components.insights.breakingConfirmed')}</div>
+        ${storiesHtml}
+      </div>
+      ${missedHtml}
+    `, 'legacy Panel.setContent() migration'));
+  }
+
+  private renderServerStories(
+    stories: ServerInsightStory[],
+    sentiments: Array<{ label: string; score: number }> | null,
+  ): string {
+    return stories.map((story, i) => {
+      const sentiment = sentiments?.[i];
+      const sentimentClass = sentiment?.label === 'negative' ? 'negative' :
+        sentiment?.label === 'positive' ? 'positive' : 'neutral';
+
+      const badges: string[] = [];
+
+      if (story.sourceCount >= 3) {
+        badges.push(`<span class="insight-badge confirmed">✓ ${t('components.insights.sources', { count: story.sourceCount })}</span>`);
+      } else if (story.sourceCount >= 2) {
+        badges.push(`<span class="insight-badge multi">${t('components.insights.sources', { count: story.sourceCount })}</span>`);
+      }
+
+      if (story.isAlert) {
+        badges.push(`<span class="insight-badge alert">⚠ ${t('components.insights.alert')}</span>`);
+      }
+
+      const VALID_THREAT_LEVELS = ['critical', 'high', 'elevated', 'moderate', 'medium', 'low', 'info'];
+      if (story.threatLevel === 'critical' || story.threatLevel === 'high') {
+        const safeThreat = VALID_THREAT_LEVELS.includes(story.threatLevel) ? story.threatLevel : 'moderate';
+        badges.push(`<span class="insight-badge velocity ${safeThreat}">${escapeHtml(story.category)}</span>`);
+      }
+
+      const link = sanitizeUrl(story.primaryLink);
+      return `
+        <div class="insight-story${link ? ' insight-story-clickable' : ''}"${link ? ` data-link="${escapeHtml(link)}"` : ''}>
+          <div class="insight-story-header">
+            <span class="insight-sentiment-dot ${sentimentClass}"></span>
+            <span class="insight-story-title">${escapeHtml(story.primaryTitle.slice(0, 100))}${story.primaryTitle.length > 100 ? '...' : ''}</span>
+          </div>
+          ${badges.length > 0 ? `<div class="insight-badges">${badges.join('')}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  private renderProvenance(insights: ServerInsights): string {
+    // #4920: the completeness stamp. Absent on pre-rollout payloads.
+    const prov = insights.provenance;
+    if (!prov || !prov.storiesConsidered) return '';
+    return `
+      <div class="insights-provenance" title="${t('components.insights.provenanceTitle')}">
+        ${t('components.insights.compiledFrom', {
+          stories: String(prov.storiesConsidered),
+          sources: String(prov.sourcesConsidered),
+        })}
+      </div>
+    `;
+  }
+
+  private renderServerStats(insights: ServerInsights): string {
+    return `
+      <div class="insights-stats">
+        <div class="insight-stat">
+          <span class="insight-stat-value">${insights.multiSourceCount}</span>
+          <span class="insight-stat-label">${t('components.insights.multiSource')}</span>
+        </div>
+        <div class="insight-stat">
+          <span class="insight-stat-value">${insights.fastMovingCount}</span>
+          <span class="insight-stat-label">${t('components.insights.fastMoving')}</span>
+        </div>
+        <div class="insight-stat">
+          <span class="insight-stat-value">${insights.clusterCount}</span>
+          <span class="insight-stat-label">${t('components.insights.clusters')}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  /** #4921: cited per-story lines + staleness footer for the World Brief. */
+  private renderBriefExtras(insights: ServerInsights): string {
+    const lines = Array.isArray(insights.briefStoryLines) ? insights.briefStoryLines : [];
+    const sources = insights.worldBriefSources ?? [];
+    const linesHtml = lines.length > 0
+      ? `<ol class="insights-brief-lines">${lines
+          .map((line) => `<li>${formatIntelBrief(line.text, { sources })
+            .replace(/^<div class="brief-para">/, '')
+            .replace(/<\/div>$/, '')
+            .replace(/^<p>/, '')
+            .replace(/<\/p>$/, '')}</li>`)
+          .join('')}</ol>`
+      : '';
+    let footer = '';
+    const generatedMs = new Date(insights.generatedAt).getTime();
+    const newestMs = insights.sourceAgeRange?.newestMs;
+    // Pre-rollout payloads lack sourceAgeRange — omit the footer rather
+    // than rendering a literal "?h old" (#4928 external review P3).
+    if (Number.isFinite(generatedMs) && Number.isFinite(newestMs)) {
+      const agoMin = Math.max(0, Math.round((Date.now() - generatedMs) / 60000));
+      const newestAgeH = Math.max(0, Math.round((Date.now() - (newestMs as number)) / 3600000 * 10) / 10);
+      footer = `<div class="insights-brief-freshness">${t('components.insights.briefFreshness', {
+        minutes: String(agoMin),
+        hours: String(newestAgeH),
+      })}</div>`;
+    }
+    return linesHtml + footer;
+  }
+
+  private renderWorldBrief(brief: string, sources: BriefSource[] = [], extrasHtml = ''): string {
+    const heading =
+      SITE_VARIANT === 'tech'      ? `🚀 ${t('components.insights.briefTech')}`
+    : SITE_VARIANT === 'commodity' ? `⛏️ ${t('components.insights.briefCommodity')}`
+    : SITE_VARIANT === 'energy'    ? `⚡ ${t('components.insights.briefEnergy')}`
+    :                                `🌍 ${t('components.insights.briefWorld')}`;
+    return `
+      <div class="insights-brief">
+        <div class="insights-section-title">${heading}</div>
+        <div class="insights-brief-text">${escapeHtml(brief)}</div>
+        ${extrasHtml}
+        ${renderBriefSourcesFooter(sources, { className: 'insights-brief-sources', maxSources: Math.max(6, sources.length) })}
+      </div>
+    `;
+  }
+
+  private renderBreakingStories(
+    items: Array<{ cluster: ClusteredEvent; isq: SignalQuality }>,
+    sentiments: Array<{ label: string; score: number }> | null
+  ): string {
+    // KCG fork: 국내 특화 콘솔 — 글로벌 영문 브레이킹 파이프라인 잔재를
+    // 숨기고 한글 기사만 노출한다(제목에 한글 포함 여부로 판별).
+    items = items.filter(({ cluster }) => /[가-힣]/.test(String(cluster.primaryTitle ?? '')));
+    const ISQ_BADGE_CLASS: Record<string, string> = {
+      strong: 'isq-strong', notable: 'isq-notable', weak: 'isq-weak', noise: 'isq-noise',
+    };
+
+    return items.map(({ cluster, isq }, i) => {
+      const sentiment = sentiments?.[i];
+      const sentimentClass = sentiment?.label === 'negative' ? 'negative' :
+        sentiment?.label === 'positive' ? 'positive' : 'neutral';
+
+      const badges: string[] = [];
+
+      if (isq.tier === 'strong' || isq.tier === 'notable') {
+        const cls = ISQ_BADGE_CLASS[isq.tier];
+        badges.push(`<span class="insight-badge ${cls}">${isq.tier.toUpperCase()}</span>`);
+      }
+
+      if (cluster.sourceCount >= 3) {
+        badges.push(`<span class="insight-badge confirmed">✓ ${t('components.insights.sources', { count: cluster.sourceCount })}</span>`);
+      } else if (cluster.sourceCount >= 2) {
+        badges.push(`<span class="insight-badge multi">${t('components.insights.sources', { count: cluster.sourceCount })}</span>`);
+      }
+
+      if (cluster.velocity && cluster.velocity.level !== 'normal') {
+        const velIcon = cluster.velocity.trend === 'rising' ? '↑' : '';
+        badges.push(`<span class="insight-badge velocity ${cluster.velocity.level}">${velIcon}+${cluster.velocity.sourcesPerHour}/hr</span>`);
+      }
+
+      if (cluster.isAlert) {
+        badges.push(`<span class="insight-badge alert">⚠ ${t('components.insights.alert')}</span>`);
+      }
+
+      const link = sanitizeUrl(cluster.primaryLink ?? '');
+      return `
+        <div class="insight-story${link ? ' insight-story-clickable' : ''}"${link ? ` data-link="${escapeHtml(link)}"` : ''}>
+          <div class="insight-story-header">
+            <span class="insight-sentiment-dot ${sentimentClass}"></span>
+            <span class="insight-story-title">${escapeHtml(cluster.primaryTitle.slice(0, 100))}${cluster.primaryTitle.length > 100 ? '...' : ''}</span>
+          </div>
+          ${badges.length > 0 ? `<div class="insight-badges">${badges.join('')}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  private renderSentimentOverview(sentiments: Array<{ label: string; score: number }> | null): string {
+    if (!sentiments || sentiments.length === 0) {
+      return '';
+    }
+
+    const negative = sentiments.filter(s => s.label === 'negative').length;
+    const positive = sentiments.filter(s => s.label === 'positive').length;
+    const neutral = sentiments.length - negative - positive;
+
+    const total = sentiments.length;
+    const negPct = Math.round((negative / total) * 100);
+    const neuPct = Math.round((neutral / total) * 100);
+    const posPct = 100 - negPct - neuPct;
+
+    let toneLabel = t('components.insights.toneMixed');
+    let toneClass = 'neutral';
+    if (negative > positive + neutral) {
+      toneLabel = t('components.insights.toneNegative');
+      toneClass = 'negative';
+    } else if (positive > negative + neutral) {
+      toneLabel = t('components.insights.tonePositive');
+      toneClass = 'positive';
+    }
+
+    return `
+      <div class="insights-sentiment-bar">
+        <div class="sentiment-bar-track">
+          <div class="sentiment-bar-negative" style="width: ${negPct}%"></div>
+          <div class="sentiment-bar-neutral" style="width: ${neuPct}%"></div>
+          <div class="sentiment-bar-positive" style="width: ${posPct}%"></div>
+        </div>
+        <div class="sentiment-bar-labels">
+          <span class="sentiment-label negative">${negative}</span>
+          <span class="sentiment-label neutral">${neutral}</span>
+          <span class="sentiment-label positive">${positive}</span>
+        </div>
+        <div class="sentiment-tone ${toneClass}">${t('components.insights.overall', { tone: toneLabel })}</div>
+      </div>
+    `;
+  }
+
+  private renderStats(clusters: ClusteredEvent[]): string {
+    const multiSource = clusters.filter(c => c.sourceCount >= 2).length;
+    const fastMoving = clusters.filter(c => c.velocity && c.velocity.level !== 'normal').length;
+    const alerts = clusters.filter(c => c.isAlert).length;
+
+    return `
+      <div class="insights-stats">
+        <div class="insight-stat">
+          <span class="insight-stat-value">${multiSource}</span>
+          <span class="insight-stat-label">${t('components.insights.multiSource')}</span>
+        </div>
+        <div class="insight-stat">
+          <span class="insight-stat-value">${fastMoving}</span>
+          <span class="insight-stat-label">${t('components.insights.fastMoving')}</span>
+        </div>
+        ${alerts > 0 ? `
+        <div class="insight-stat alert">
+          <span class="insight-stat-value">${alerts}</span>
+          <span class="insight-stat-label">${t('components.insights.alertsLabel')}</span>
+        </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  private get showMlDetected(): boolean {
+    try { return localStorage.getItem('wm:debug-ml') === '1'; } catch { return false; }
+  }
+
+  private renderMissedStories(): string {
+    if (this.lastMissedStories.length === 0 || !this.showMlDetected) {
+      return '';
+    }
+
+    const storiesHtml = this.lastMissedStories.slice(0, 3).map(story => {
+      const topPerspective = story.perspectives
+        .filter(p => p.name !== 'keywords')
+        .sort((a, b) => b.score - a.score)[0];
+
+      const perspectiveName = topPerspective?.name ?? 'ml';
+      const perspectiveScore = topPerspective?.score ?? 0;
+
+      return `
+        <div class="insight-story missed">
+          <div class="insight-story-header">
+            <span class="insight-sentiment-dot ml-flagged"></span>
+            <span class="insight-story-title">${escapeHtml(story.title.slice(0, 80))}${story.title.length > 80 ? '...' : ''}</span>
+          </div>
+          <div class="insight-badges">
+            <span class="insight-badge ml-detected">🔬 ${perspectiveName}: ${(perspectiveScore * 100).toFixed(0)}%</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="insights-section insights-missed">
+        <div class="insights-section-title">🎯 ${t('components.insights.mlDetected')}</div>
+        ${storiesHtml}
+      </div>
+    `;
+  }
+
+  private renderConvergenceZones(): string {
+    if (this.lastConvergenceZones.length === 0) {
+      return '';
+    }
+
+    const zonesHtml = this.lastConvergenceZones.slice(0, 3).map(zone => {
+      const signalIcons: Record<string, string> = {
+        internet_outage: '🌐',
+        military_flight: '✈️',
+        military_vessel: '🚢',
+        protest: '🪧',
+        ais_disruption: '⚓',
+      };
+
+      const icons = zone.signalTypes.map(t => signalIcons[t] || '📍').join('');
+
+      return `
+        <div class="convergence-zone">
+          <div class="convergence-region">${icons} ${escapeHtml(zone.region)}</div>
+          <div class="convergence-description">${escapeHtml(zone.description)}</div>
+          <div class="convergence-stats">${t('components.insights.signalTypesEvents', { types: zone.signalTypes.length, events: zone.totalSignals })}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="insights-section insights-convergence">
+        <div class="insights-section-title">📍 ${t('components.insights.geographicConvergence')}</div>
+        ${zonesHtml}
+      </div>
+    `;
+  }
+
+  private renderFocalPoints(): string {
+    // Show focal points with news+signals correlations, or those with active strikes
+    const correlatedFPs = this.lastFocalPoints.filter(
+      fp => (fp.newsMentions > 0 && fp.signalCount > 0) ||
+            fp.signalTypes.includes('active_strike')
+    ).slice(0, 5);
+
+    if (correlatedFPs.length === 0) {
+      return '';
+    }
+
+    const signalIcons: Record<string, string> = {
+      internet_outage: '🌐',
+      military_flight: '✈️',
+      military_vessel: '⚓',
+      protest: '📢',
+      ais_disruption: '🚢',
+      active_strike: '💥',
+    };
+
+    const focalPointsHtml = correlatedFPs.map(fp => {
+      const urgencyClass = fp.urgency;
+      const icons = fp.signalTypes.map(t => signalIcons[t] || '').join(' ');
+      const topHeadline = fp.topHeadlines[0];
+      const headlineText = topHeadline?.title?.slice(0, 60) || '';
+      const headlineUrl = sanitizeUrl(topHeadline?.url || '');
+
+      return `
+        <div class="focal-point ${urgencyClass}">
+          <div class="focal-point-header">
+            <span class="focal-point-name">${escapeHtml(fp.displayName)}</span>
+            <span class="focal-point-urgency ${urgencyClass}">${fp.urgency.toUpperCase()}</span>
+          </div>
+          <div class="focal-point-signals">${icons}</div>
+          <div class="focal-point-stats">
+            ${t('components.insights.newsSignals', { news: fp.newsMentions, signals: fp.signalCount })}
+          </div>
+          ${headlineText && headlineUrl ? `<a href="${headlineUrl}" target="_blank" rel="noopener" class="focal-point-headline">"${escapeHtml(headlineText)}..."</a>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="insights-section insights-focal">
+        <div class="insights-section-title">🎯 ${t('components.insights.focalPoints')}</div>
+        ${focalPointsHtml}
+      </div>
+    `;
+  }
+
+  private renderDisabledState(): void {
+    this.setSafeContent(unsafeRawHtml(`
+      <div class="insights-disabled">
+        <div class="insights-disabled-icon">⚡</div>
+        <div class="insights-disabled-title">${t('components.insights.insightsDisabledTitle')}</div>
+        <div class="insights-disabled-hint">${t('components.insights.insightsDisabledHint')}</div>
+      </div>
+    `, 'legacy Panel.setContent() migration'));
+  }
+
+  private async onAiFlowChanged(): Promise<void> {
+    this.updateGeneration++;
+    // Reset brief cache so new provider settings take effect immediately
+    this.cachedBrief = null;
+    this.lastBriefUpdate = 0;
+    try {
+      await deletePersistentCache(InsightsPanel.BRIEF_CACHE_KEY);
+    } catch {
+      // Best effort; fallback regeneration still works from memory reset.
+    }
+    if (!this.element?.isConnected) return;
+
+    if (!isAnyAiProviderEnabled()) {
+      this.setDataBadge('unavailable');
+      this.renderDisabledState();
+      return;
+    }
+
+    // Re-run full updateInsights which checks server insights first,
+    // then falls back to client-side clustering
+    void this.updateInsights(this.lastClusters);
+  }
+
+  public override destroy(): void {
+    this.aiFlowUnsubscribe?.();
+    this.frameworkUnsubscribe?.();
+    this.fwSelector?.destroy();
+    if (this.kcgPresetBriefTimer) { clearInterval(this.kcgPresetBriefTimer); this.kcgPresetBriefTimer = null; }
+    window.removeEventListener(KCG_PRESET_CHANGED_EVENT, this.onKcgPresetChanged);
+    super.destroy();
+  }
+}

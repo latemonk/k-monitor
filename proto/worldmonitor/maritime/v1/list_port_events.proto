@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package worldmonitor.maritime.v1;
+
+import "sebuf/http/annotations.proto";
+
+// ListPortEventsRequest selects a port to list arrival/departure events for.
+message ListPortEventsRequest {
+  // UN/LOCODE of the port. Only the Korean ports on the server allowlist are
+  // accepted (KRPUS, KRINC, KRUSN); anything else returns an empty response.
+  string unlocode = 1 [(sebuf.http.query) = { name: "unlocode" }];
+}
+
+// PortEvent is one detected arrival or departure at a port.
+message PortEvent {
+  // "arrival" or "departure".
+  string event_type = 1;
+  // Detection time, Unix epoch milliseconds.
+  int64 occurred_at = 2 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+  // Vessel name (as reported; may be lowercase).
+  string vessel_name = 3;
+  // 9-digit MMSI ("" when unknown).
+  string vessel_mmsi = 4;
+  // 7-digit IMO number ("" when unknown).
+  string vessel_imo = 5;
+  // Port UN/LOCODE.
+  string port_unlocode = 6;
+}
+
+// ListPortEventsResponse contains recent events for the requested port.
+message ListPortEventsResponse {
+  // Events, newest first (last ~24h window, capped server-side).
+  repeated PortEvent events = 1;
+  // Time this event list was fetched upstream, Unix epoch milliseconds.
+  int64 fetched_at = 2 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+  // False when the upstream lookup was skipped or failed and no cache exists.
+  bool data_available = 3;
+}

@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package worldmonitor.maritime.v1;
+
+import "sebuf/http/annotations.proto";
+import "worldmonitor/maritime/v1/get_vessel_snapshot.proto";
+import "worldmonitor/maritime/v1/get_vessel_track.proto";
+import "worldmonitor/maritime/v1/list_navigational_warnings.proto";
+import "worldmonitor/maritime/v1/list_port_events.proto";
+import "worldmonitor/maritime/v1/search_vessels.proto";
+
+// MaritimeService provides APIs for civilian AIS vessel data and NGA navigational warnings.
+service MaritimeService {
+  option (sebuf.http.service_config) = {base_path: "/api/maritime/v1"};
+
+  // GetVesselSnapshot retrieves a point-in-time view of AIS vessel traffic and disruptions.
+  // Empty/absent snapshot with fetched_at=0 or data_available=false means the
+  // relay snapshot is unavailable/degraded, not that traffic is confirmed absent.
+  rpc GetVesselSnapshot(GetVesselSnapshotRequest) returns (GetVesselSnapshotResponse) {
+    option (sebuf.http.config) = {path: "/get-vessel-snapshot", method: HTTP_METHOD_GET};
+  }
+
+  // ListNavigationalWarnings retrieves active maritime safety warnings from NGA.
+  rpc ListNavigationalWarnings(ListNavigationalWarningsRequest) returns (ListNavigationalWarningsResponse) {
+    option (sebuf.http.config) = {path: "/list-navigational-warnings", method: HTTP_METHOD_GET};
+  }
+
+  // SearchVessels looks up vessels in the registry by name, MMSI or IMO.
+  // Interactive, quota-guarded upstream — results are cached aggressively.
+  rpc SearchVessels(SearchVesselsRequest) returns (SearchVesselsResponse) {
+    option (sebuf.http.config) = {path: "/search-vessels", method: HTTP_METHOD_GET};
+  }
+
+  // GetVesselTrack returns recent AIS tracks for up to 10 watched vessels.
+  // Interactive, quota-guarded upstream — results are cached aggressively.
+  rpc GetVesselTrack(GetVesselTrackRequest) returns (GetVesselTrackResponse) {
+    option (sebuf.http.config) = {path: "/get-vessel-track", method: HTTP_METHOD_GET};
+  }
+
+  // ListPortEvents returns recent arrivals/departures for an allowlisted
+  // Korean port. Interactive, quota-guarded upstream with a long cache.
+  rpc ListPortEvents(ListPortEventsRequest) returns (ListPortEventsResponse) {
+    option (sebuf.http.config) = {path: "/list-port-events", method: HTTP_METHOD_GET};
+  }
+}

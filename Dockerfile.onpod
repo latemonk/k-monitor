@@ -1,0 +1,96 @@
+# =============================================================================
+# K-Monitor(대한민국 AI 통합 관제) — all-in-one self-hosting image
+# =============================================================================
+# The upstream self-hosted stack is 4 containers (app, redis, redis-rest
+# proxy, ais-relay). onpod deploys one container per app, so this image runs
+# all four processes under the existing supervisord (plus nginx + node API
+# sidecar it already had). Secrets (REDIS_PASSWORD/REDIS_TOKEN/
+# RELAY_SHARED_SECRET) are auto-generated at boot when not provided — they
+# only guard intra-container loopback traffic here.
+# =============================================================================
+
+# ── Stage 1: Builder ─────────────────────────────────────────────────────────
+FROM node:24-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY . .
+
+RUN node docker/build-handlers.mjs
+# KCG fork: crawlable corpus(원본 SEO 페이지 ~200장)·sitemap 코퍼스 생성 제외 —
+# 원본 브랜드 콘텐츠가 우리 도메인에 서빙되는 것 방지(탈브랜딩 07-21).
+RUN npx tsc && npx vite build
+
+# ── Stage 2: Runtime dependencies (raw api/*.js handlers) ───────────────────
+FROM node:24-alpine AS runtime-deps
+
+WORKDIR /app
+COPY docker/runtime-package.json ./package.json
+COPY docker/runtime-package-lock.json ./package-lock.json
+RUN npm ci --omit=dev --omit=optional --ignore-scripts
+
+# ── Stage 3: Relay dependencies (scripts/) ───────────────────────────────────
+FROM node:24-alpine AS relay-deps
+
+WORKDIR /app
+COPY scripts/package.json scripts/package-lock.json ./scripts/
+RUN npm ci --prefix scripts --omit=dev --omit=optional --ignore-scripts
+
+# ── Stage 4: Redis REST proxy dependencies ───────────────────────────────────
+FROM node:24-alpine AS redis-rest-deps
+
+WORKDIR /rest
+RUN npm init -y && npm install redis@4
+
+# ── Stage 5: Runtime ─────────────────────────────────────────────────────────
+FROM node:24-alpine AS final
+
+RUN apk add --no-cache nginx supervisor gettext redis && \
+    mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi \
+             /tmp/nginx-uwsgi /tmp/nginx-scgi /var/log/supervisor /tmp/redis-data && \
+    addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+
+# API sidecar
+COPY --from=builder /app/src-tauri/sidecar/local-api-server.mjs ./local-api-server.mjs
+COPY --from=builder /app/src-tauri/sidecar/package.json ./package.json
+COPY --from=runtime-deps /app/node_modules ./node_modules
+
+# API handler modules + static data
+COPY --from=builder /app/api ./api
+COPY --from=builder /app/data ./data
+
+# Built frontend
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# AIS relay (demo-capable) + its deps + shared helpers
+COPY --from=relay-deps /app/scripts/node_modules ./scripts/node_modules
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/shared ./shared
+
+# Redis REST proxy
+COPY --from=redis-rest-deps /rest /rest
+COPY --from=builder /app/docker/redis-rest-proxy.mjs /rest/redis-rest-proxy.mjs
+
+# Nginx + supervisord + entrypoint
+COPY docker/nginx.conf /etc/nginx/nginx.conf.template
+COPY docker/supervisord-onpod.conf /etc/supervisor/conf.d/worldmonitor.conf
+COPY docker/entrypoint-onpod.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+RUN chown -R appuser:appgroup /app /rest /tmp/nginx-client-body /tmp/nginx-proxy \
+    /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi /var/log/supervisor \
+    /var/lib/nginx /var/log/nginx /tmp/redis-data
+
+USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/api/sidecar-health >/dev/null 2>&1 || exit 1
+
+CMD ["/app/entrypoint.sh"]

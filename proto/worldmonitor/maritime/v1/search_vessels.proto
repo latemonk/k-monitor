@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package worldmonitor.maritime.v1;
+
+import "sebuf/http/annotations.proto";
+
+// SearchVesselsRequest specifies a vessel registry search.
+message SearchVesselsRequest {
+  // Vessel name (partial match) or a 9-digit MMSI / 7-digit IMO number.
+  string query = 1 [(sebuf.http.query) = { name: "query" }];
+}
+
+// VesselRegistryEntry is one vessel from the registry search.
+message VesselRegistryEntry {
+  // 9-digit Maritime Mobile Service Identity ("" when unknown).
+  string mmsi = 1;
+  // 7-digit IMO number ("" when unknown).
+  string imo = 2;
+  // Registered vessel name.
+  string name = 3;
+  // Radio callsign ("" when unknown).
+  string callsign = 4;
+  // ISO 3166-1 alpha-2 flag state code ("" when unknown).
+  string flag = 5;
+  // Human-readable vessel type (e.g., "Training Ship").
+  string vessel_type = 6;
+  // Length overall in meters (0 when unknown).
+  double length_m = 7;
+  // Gross tonnage (0 when unknown).
+  double gross_tonnage = 8;
+  // Year built (0 when unknown).
+  int32 year_built = 9;
+  // Home port ("" when unknown).
+  string home_port = 10;
+}
+
+// SearchVesselsResponse contains registry entries matching the query.
+message SearchVesselsResponse {
+  // Matching vessels (best matches first, capped server-side).
+  repeated VesselRegistryEntry vessels = 1;
+  // False when the upstream lookup was skipped or failed (quota guard,
+  // upstream outage). An empty `vessels` with data_available=true means a
+  // genuine zero-match.
+  bool data_available = 2;
+  // True when the daily interactive lookup budget is exhausted; the client
+  // should tell the user to retry tomorrow rather than retrying now.
+  bool quota_exhausted = 3;
+}

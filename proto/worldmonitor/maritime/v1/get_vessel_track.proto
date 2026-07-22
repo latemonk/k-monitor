@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package worldmonitor.maritime.v1;
+
+import "sebuf/http/annotations.proto";
+
+// GetVesselTrackRequest asks for recent position tracks of up to 10 vessels.
+message GetVesselTrackRequest {
+  // Comma-separated MMSI list (max 10). Example: "440053970,440406120".
+  string mmsis = 1 [(sebuf.http.query) = { name: "mmsis" }];
+  // When true and a single MMSI is requested, also fetch the crew-reported
+  // destination/ETA (costs one extra upstream call; ignored for multi-MMSI).
+  bool include_eta = 2 [(sebuf.http.query) = { name: "include_eta" }];
+}
+
+// VesselTrackPoint is a single AIS position report.
+message VesselTrackPoint {
+  // WGS84 latitude.
+  double latitude = 1;
+  // WGS84 longitude.
+  double longitude = 2;
+  // Speed over ground in knots (-1 when unknown).
+  double sog_knots = 3;
+  // AIS navigational status code (-1 when unknown).
+  int32 nav_status = 4;
+  // Position report time, Unix epoch milliseconds.
+  int64 observed_at = 5 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+}
+
+// VesselTrack is the recent track of one vessel (newest point last).
+message VesselTrack {
+  // 9-digit MMSI.
+  string mmsi = 1;
+  // Vessel name as reported over AIS ("" when unknown).
+  string name = 2;
+  // Recent position reports, oldest first.
+  repeated VesselTrackPoint points = 3;
+  // Crew-reported destination port ("" when not requested/available).
+  string destination = 4;
+  // Crew-reported ETA, Unix epoch milliseconds (0 when not available).
+  int64 eta_at = 5 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+  // Current draught in meters (0 when not available).
+  double draught_m = 6;
+}
+
+// GetVesselTrackResponse contains tracks for the requested vessels. A vessel
+// with no recent AIS reports is simply absent from `tracks` — absence after a
+// data_available=true response is the "signal lost" condition watchers alert on.
+message GetVesselTrackResponse {
+  // Tracks for vessels that had recent position reports.
+  repeated VesselTrack tracks = 1;
+  // Time this track set was fetched upstream, Unix epoch milliseconds.
+  // Serves 0 when the upstream lookup failed and no cache exists.
+  int64 fetched_at = 2 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+  // False when the upstream lookup was skipped or failed and no cached data
+  // could be served — clients must NOT treat missing vessels as signal loss.
+  bool data_available = 3;
+  // True when the daily tracking budget is exhausted (stale cache may still
+  // be served with data_available=true).
+  bool quota_exhausted = 4;
+}

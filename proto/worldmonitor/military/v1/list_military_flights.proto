@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package worldmonitor.military.v1;
+
+import "sebuf/http/annotations.proto";
+import "worldmonitor/core/v1/pagination.proto";
+import "worldmonitor/military/v1/military_flight.proto";
+
+// ListMilitaryFlightsRequest specifies filters for retrieving military flight data.
+message ListMilitaryFlightsRequest {
+  // Maximum items per page (1-100).
+  int32 page_size = 1 [(sebuf.http.query) = { name: "page_size" }];
+  // Cursor for next page.
+  // Accepted but currently ignored; no-op until this handler supports the parameter.
+  string cursor = 2 [(sebuf.http.query) = { name: "cursor" }, (sebuf.http.unimplemented) = true];
+  // North-east corner latitude of bounding box.
+  double ne_lat = 3 [(sebuf.http.query) = { name: "ne_lat" }];
+  // North-east corner longitude of bounding box.
+  double ne_lon = 4 [(sebuf.http.query) = { name: "ne_lon" }];
+  // South-west corner latitude of bounding box.
+  double sw_lat = 5 [(sebuf.http.query) = { name: "sw_lat" }];
+  // South-west corner longitude of bounding box.
+  double sw_lon = 6 [(sebuf.http.query) = { name: "sw_lon" }];
+  // Optional operator filter.
+  // Accepted but currently ignored; no-op until this handler supports the parameter.
+  MilitaryOperator operator = 7 [(sebuf.http.query) = { name: "operator" }, (sebuf.http.unimplemented) = true];
+  // Optional aircraft type filter.
+  // Accepted but currently ignored; no-op until this handler supports the parameter.
+  MilitaryAircraftType aircraft_type = 8 [(sebuf.http.query) = { name: "aircraft_type" }, (sebuf.http.unimplemented) = true];
+}
+
+// ListMilitaryFlightsResponse contains military flights and clusters.
+message ListMilitaryFlightsResponse {
+  // Individual military flights.
+  repeated MilitaryFlight flights = 1;
+  // Geographic clusters of flights.
+  repeated MilitaryFlightCluster clusters = 2;
+  // Pagination metadata.
+  worldmonitor.core.v1.PaginationResponse pagination = 3;
+}

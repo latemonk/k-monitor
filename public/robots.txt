@@ -1,0 +1,4 @@
+# 대한민국 AI 통합 관제 — API 경로 크롤링 차단
+User-agent: *
+Disallow: /api/
+Allow: /

@@ -1,0 +1,222 @@
+---
+import Base from './Base.astro';
+import { coverWebpSources } from '../lib/cover-webp';
+
+interface Props {
+  title: string;
+  description: string;
+  metaTitle?: string;
+  keywords?: string;
+  pubDate: Date;
+  modifiedDate?: Date;
+  author?: string;
+  authorUrl?: string;
+  authorBio?: string;
+  audience?: string;
+  heroImage?: string;
+  slug?: string;
+  rawBody?: string;
+  relatedPosts?: { title: string; description: string; href: string }[];
+}
+
+const { title, description, metaTitle, keywords, pubDate, modifiedDate, author, authorUrl, authorBio, audience, heroImage, slug, rawBody, relatedPosts = [] } = Astro.props;
+function toAbsoluteWorldMonitorUrl(pathOrUrl: string | undefined): string | undefined {
+  if (!pathOrUrl) return undefined;
+  if (/^https?:\/\//.test(pathOrUrl)) return pathOrUrl;
+  return new URL(pathOrUrl, 'https://www.worldmonitor.app').href;
+}
+
+const ogImage = toAbsoluteWorldMonitorUrl(heroImage || (slug ? `/blog/images/blog/${slug}.jpg` : undefined));
+const canonicalUrl = slug
+  ? `https://www.worldmonitor.app/blog/posts/${slug}/`
+  : new URL(Astro.url.pathname, 'https://www.worldmonitor.app').href;
+const formattedDate = pubDate.toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+});
+const isoDate = pubDate.toISOString();
+const isoModifiedDate = modifiedDate ? modifiedDate.toISOString() : isoDate;
+const DEFAULT_AUTHOR = 'Elie Habib';
+const DEFAULT_AUTHOR_URL = 'https://x.com/eliehabib';
+const DEFAULT_AUTHOR_BIO = 'Founder of World Monitor. Previously co-founder &amp; CEO of Anghami (NASDAQ: ANGH). Building open-source global intelligence infrastructure.';
+const DEFAULT_AUTHOR_GITHUB = 'koala73';
+const authorName = author || DEFAULT_AUTHOR;
+const resolvedAuthorUrl = authorUrl || (authorName === DEFAULT_AUTHOR ? DEFAULT_AUTHOR_URL : undefined);
+const resolvedAuthorBio = authorBio || (authorName === DEFAULT_AUTHOR ? DEFAULT_AUTHOR_BIO : undefined);
+const avatarSrc = authorName === DEFAULT_AUTHOR
+  ? `https://unavatar.io/github/${DEFAULT_AUTHOR_GITHUB}`
+  : '/favico/apple-touch-icon.png';
+// Committed covers have generated .webp / -640.webp siblings (guarded by
+// tests/blog-cover-webp.test.mjs); coverWebpSources() returns null when the
+// siblings don't exist (e.g. deploy-generated /blog/og/*.png covers).
+const heroWebp = coverWebpSources(heroImage);
+const showUpdated = modifiedDate && modifiedDate.getTime() !== pubDate.getTime();
+const formattedModifiedDate = modifiedDate ? modifiedDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+const wordCount = rawBody ? rawBody.trim().split(/\s+/).filter(Boolean).length : undefined;
+const readingMinutes = wordCount ? Math.max(1, Math.ceil(wordCount / 220)) : undefined;
+
+const breadcrumbLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Blog",
+      "item": "https://www.worldmonitor.app/blog/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": title,
+      "item": canonicalUrl
+    }
+  ]
+};
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "@id": `${canonicalUrl}#article`,
+  "headline": title,
+  ...(metaTitle && metaTitle !== title ? { "alternativeHeadline": metaTitle } : {}),
+  "description": description,
+  "datePublished": isoDate,
+  "dateModified": isoModifiedDate,
+  "inLanguage": "en-US",
+  "isAccessibleForFree": true,
+  ...(audience ? { "articleSection": audience } : {}),
+  ...(wordCount ? { "wordCount": wordCount } : {}),
+  ...(readingMinutes ? { "timeRequired": `PT${readingMinutes}M` } : {}),
+  "author": {
+    "@type": "Person",
+    "name": authorName,
+    ...(resolvedAuthorUrl ? { "url": resolvedAuthorUrl } : {})
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "World Monitor",
+    "url": "https://www.worldmonitor.app",
+    "sameAs": [
+      "https://github.com/koala73/worldmonitor",
+      "https://x.com/worldmonitorai"
+    ],
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://www.worldmonitor.app/favico/apple-touch-icon.png"
+    }
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": canonicalUrl
+  },
+  "image": ogImage || "https://www.worldmonitor.app/favico/og-image.png",
+  "url": canonicalUrl,
+  ...(keywords ? { "keywords": keywords } : {})
+};
+
+function extractFaqLd(body: string | undefined): object | null {
+  if (!body) return null;
+  const faqIdx = body.indexOf('## Frequently Asked Questions');
+  if (faqIdx === -1) return null;
+  const afterFaq = body.slice(faqIdx + '## Frequently Asked Questions'.length);
+  // The FAQ section ends at the next H2 OR at a horizontal rule — nearly
+  // every post closes its FAQ with `---` followed by a bold takeaway/CTA
+  // paragraph, which must not be extracted as a Question.
+  const nextHeading = afterFaq.search(/\n##\s|\n---\s*\n/);
+  const faqSection = nextHeading === -1 ? afterFaq : afterFaq.slice(0, nextHeading);
+  // \n+ (not \n): every post writes a blank line between the bolded question
+  // and its answer — with a single \n the regex matched nothing and NO post
+  // ever emitted FAQPage JSON-LD (#5001). Guarded against the real post
+  // corpus by tests/blog-faq-ld.test.mjs.
+  const qaRegex = /\*\*(.+?)\*\*\n+([^\n*]+(?:\n[^\n*#]+)*)/g;
+  const items: { "@type": string; name: string; acceptedAnswer: { "@type": string; text: string } }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = qaRegex.exec(faqSection)) !== null) {
+    const q = match[1].trim();
+    const a = match[2].replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
+    if (q && a) items.push({ "@type": "Question", name: q, acceptedAnswer: { "@type": "Answer", text: a } });
+  }
+  if (items.length === 0) return null;
+  return { "@context": "https://schema.org", "@type": "FAQPage", "mainEntity": items };
+}
+
+const faqLd = extractFaqLd(rawBody);
+---
+
+<Base
+  title={title}
+  description={description}
+  metaTitle={metaTitle}
+  keywords={keywords}
+  ogType="article"
+  ogImage={ogImage}
+  ogImageAlt={`${title} - World Monitor Blog`}
+  canonicalUrl={canonicalUrl}
+  publishedTime={isoDate}
+  modifiedTime={isoModifiedDate}
+  author={authorName}
+  section={audience}
+  jsonLd={jsonLd}
+  breadcrumbLd={breadcrumbLd}
+  faqLd={faqLd ?? undefined}
+>
+  <article>
+    <div class="article-header">
+      <a href="/blog/" class="back">&larr; All articles</a>
+      <div class="meta">
+        <time datetime={isoDate}>{formattedDate}</time>
+        {showUpdated && <span> &middot; Updated <time datetime={isoModifiedDate}>{formattedModifiedDate}</time></span>}
+        {audience && <span> &middot; {audience}</span>}
+      </div>
+    </div>
+    {heroImage && (
+      <picture>
+        {heroWebp && (
+          <source
+            type="image/webp"
+            srcset={`${heroWebp.webp640} 640w, ${heroWebp.webp} 1200w`}
+            sizes="(max-width: 812px) calc(100vw - 2rem), 780px"
+          />
+        )}
+        <img src={heroImage} alt={title} class="hero-image" width="1200" height="630" fetchpriority="high" decoding="async" />
+      </picture>
+    )}
+    <div class="article-content prose">
+      <h1>{title}</h1>
+      <slot />
+    </div>
+    {relatedPosts.length > 0 && (
+      <nav class="related-posts" aria-labelledby="related-posts-title">
+        <h2 id="related-posts-title">Related Intelligence Guides</h2>
+        <div class="related-post-grid">
+          {relatedPosts.map((post) => (
+            <a href={post.href} class="related-post-card">
+              <span>Read Next</span>
+              <h3>{post.title}</h3>
+              <p>{post.description}</p>
+            </a>
+          ))}
+        </div>
+      </nav>
+    )}
+    <div class="cta-banner">
+      <h3>See the World in Real Time</h3>
+      <p>Markets, geopolitics, conflicts, infrastructure. One dashboard. No login required.</p>
+      <a href="https://www.worldmonitor.app" class="btn" target="_blank" rel="noopener noreferrer">Open Dashboard</a>
+    </div>
+    <div class="author-bio">
+      <img src={avatarSrc} alt={authorName} width="48" height="48" class="author-avatar" loading="lazy" onerror="this.src='/favico/apple-touch-icon.png'" />
+      <div class="author-info">
+        <div class="author-name">
+          {resolvedAuthorUrl
+            ? <a href={resolvedAuthorUrl} target="_blank" rel="author noopener noreferrer">{authorName}</a>
+            : <span>{authorName}</span>
+          }
+        </div>
+        {resolvedAuthorBio && <div class="author-desc" set:html={resolvedAuthorBio} />}
+      </div>
+    </div>
+  </article>
+</Base>

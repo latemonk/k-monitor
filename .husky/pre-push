@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+echo "Checking for local Vercel env dumps..."
+node scripts/check-local-secret-dumps.mjs || exit 1
+
+echo "Checking Vite-prefixed environment variables..."
+node scripts/check-vite-env-secrets.mjs || exit 1
+
+export npm_config_cache="${npm_config_cache:-/tmp/worldmonitor-npm-cache}"
+
+# Ensure dependencies are installed (worktrees start with no node_modules)
+if [ ! -d node_modules ]; then
+  echo "node_modules missing, running npm ci..."
+  npm ci --cache "$npm_config_cache" || exit 1
+fi
+
+echo "Checking PR status for current branch..."
+BRANCH=$(git branch --show-current)
+if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
+  PR_STATE=$(gh pr view "$BRANCH" --json state --jq '.state' 2>&1)
+  if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
+    echo ""
+    echo "============================================================"
+    echo "ERROR: PR for branch '$BRANCH' is $PR_STATE."
+    echo "Do NOT push to a merged/closed PR branch — commits will be orphaned."
+    echo "Run: git checkout main && git pull && git checkout -b fix/new-branch"
+    echo "============================================================"
+    exit 1
+  fi
+  echo "  Branch PR state: ${PR_STATE:-unknown}"
+
+  # Guard against branch contamination from a dirty local main.
+  # A feature/fix branch should never have more than 20 commits — if it does,
+  # the branch was likely created from a local main that had unmerged feature branches.
+  COMMIT_COUNT=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  if [ "$COMMIT_COUNT" -gt 20 ]; then
+    echo ""
+    echo "============================================================"
+    echo "ERROR: Branch '$BRANCH' is $COMMIT_COUNT commits ahead of origin/main."
+    echo "This usually means it was branched from a dirty local main."
+    echo "Fix: create branches from a worktree or use: git checkout -b <name> origin/main"
+    echo "============================================================"
+    exit 1
+  fi
+fi
+
+echo "Checking scripts/package-lock.json sync..."
+if git diff --name-only origin/main -- scripts/package.json | grep -q .; then
+  if ! git diff --name-only origin/main -- scripts/package-lock.json | grep -q .; then
+    echo ""
+    echo "============================================================"
+    echo "ERROR: scripts/package.json was modified but scripts/package-lock.json was not committed."
+    echo "Run: cd scripts && npm install && cd .."
+    echo "Then: git add scripts/package-lock.json && git commit --amend --no-edit"
+    echo "============================================================"
+    exit 1
+  fi
+fi
+
+# --- Change scoping + green-tree cache (2026-07 velocity audit) -------------
+# Session-transcript mining showed 43% of sessions fight this gate and most
+# pushes paid every typecheck/lint unconditionally. The typechecks and
+# invariant lints below are now scoped to the paths they actually check
+# (mirroring how the test categories were already scoped), and a tree that
+# passed the full gate once is cached so an immediate re-push (remote-side
+# failure, message-only amend) doesn't re-pay minutes of checks.
+RUN_ALL=false
+RUN_ALL_REASON=""
+DIFF_RESOLVED=true
+if CHANGED_FILES=$(git diff --name-only origin/main...HEAD 2>/dev/null); then
+  :
+else
+  # origin/main is not resolvable (offline, fresh clone, missing remote ref).
+  # Force EVERYTHING: the HEAD~1 fallback only sees the last commit, so using
+  # it to scope safety gates would silently skip typechecks/lints for earlier
+  # commits in the push — and then the green-tree cache would stamp that tree.
+  # HEAD~1 is kept ONLY to narrow the changed-test list (informational).
+  CHANGED_FILES=$(git diff --name-only HEAD~1 2>/dev/null || echo "")
+  RUN_ALL=true
+  DIFF_RESOLVED=false
+  RUN_ALL_REASON="changed files could not be resolved from origin/main"
+  echo "WARNING: Could not resolve branch diff from origin/main — running ALL invariant checks as safety fallback."
+fi
+if echo "$CHANGED_FILES" | grep -q "package.json\|tsconfig"; then
+  RUN_ALL=true
+  RUN_ALL_REASON="${RUN_ALL_REASON:-config changed}"
+fi
+
+# changed <ERE>: true when RUN_ALL is forced or any changed file matches.
+changed() { [ "$RUN_ALL" = true ] || echo "$CHANGED_FILES" | grep -qE "$1"; }
+
+# Green-tree cache: if this exact tree already passed the full gate, skip the
+# tree-dependent checks. State-dependent checks (secrets, PR state, branch
+# contamination, lockfile sync) have already run above and always do.
+#
+# Cache READS are disabled when the branch diff could not be resolved: the
+# tree hash captures content-derived plan inputs (a package.json change is in
+# the tree), but NOT state-derived ones — a blind run must not trust an
+# attestation minted under a scoped plan it can no longer verify. Writes stay
+# enabled: a fallback run executes everything, the strongest attestation.
+GATE_CACHE="$(git rev-parse --git-dir)/wm-prepush-green"
+TREE_HASH=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo "")
+if [ "$DIFF_RESOLVED" = true ] && [ -n "$TREE_HASH" ] && [ -f "$GATE_CACHE" ] && grep -qxF "$TREE_HASH" "$GATE_CACHE" 2>/dev/null; then
+  echo "Pre-push gates: this exact tree already passed ($TREE_HASH)."
+  echo "  Skipping tree-dependent checks (delete $GATE_CACHE to force a re-run)."
+  exit 0
+fi
+
+if changed '^(src/|tests/|e2e/|middleware|index\.html|vite\.config|scripts/|types/)'; then
+  echo "Running type check..."
+  npm run typecheck || exit 1
+else
+  echo "Type check skipped (no frontend-surface changes)."
+fi
+
+if changed '^(api/|server/|scripts/|middleware|src/generated/)'; then
+  # tsconfig.api.json includes api, src/generated, AND server — a generated
+  # client/contract change alone can break API compilation.
+  echo "Running API type check..."
+  npm run typecheck:api || exit 1
+else
+  echo "API type check skipped (no api/server/scripts/src-generated changes)."
+fi
+
+if changed '^convex/'; then
+  echo "Running Convex type check..."
+  # Catches stale convex/_generated/api.d.ts (forgotten `npx convex codegen`
+  # after adding a module) and any drift between convex/schema.ts and the
+  # code that reads it. Pre-push is the right gate — these errors surface
+  # only at convex deploy time otherwise, deep into a release window.
+  npx tsc --noEmit -p convex/tsconfig.json || exit 1
+else
+  echo "Convex type check skipped (no convex/ changes)."
+fi
+
+if changed '^scripts/.*\.cjs$'; then
+  echo "Running CJS syntax check..."
+  for f in scripts/*.cjs; do
+    [ -f "$f" ] && node -c "$f" || exit 1
+  done
+fi
+
+echo "Running Unicode safety check..."
+node scripts/check-unicode-safety.mjs || exit 1
+
+# Each guardrail also fires when its OWN implementation script changes, so a
+# broken gate can't push locally and only fail later in CI.
+if changed '^(src/|server/|api/|scripts/lint-boundaries\.mjs$)'; then
+  echo "Running architectural boundary check..."
+  npm run lint:boundaries || exit 1
+fi
+
+if changed '^(src/|scripts/enforce-safe-html\.mjs$)'; then
+  echo "Running safe HTML sink check..."
+  npm run lint:safe-html || exit 1
+fi
+
+if changed '^(src/|api/|server/|scripts/check-sentry-coverage\.mjs$)'; then
+  echo "Running Sentry-coverage check..."
+  node scripts/check-sentry-coverage.mjs || exit 1
+fi
+
+if changed '^(api/|server/|scripts/enforce-rate-limit-policies\.mjs$)'; then
+  echo "Running rate-limit policy coverage check..."
+  npm run lint:rate-limit-policies || exit 1
+fi
+
+if changed '^(src/|api/|scripts/enforce-premium-fetch\.mjs$)'; then
+  echo "Running premium-fetch parity check..."
+  npm run lint:premium-fetch || exit 1
+fi
+
+if changed '^(api/|server/|src/generated/)'; then
+  # Edge RPC entries under api/ bundle-import server/gateway, domain handlers,
+  # and generated stubs — a server-only Node-ism breaks the Vercel bundle with
+  # zero api/ diff, so those paths must trigger the esbuild check too.
+  echo "Running edge function bundle check..."
+  while IFS= read -r f; do
+    npx esbuild "$f" --bundle --format=esm --platform=browser --outfile=/dev/null 2>/dev/null || {
+      echo "ERROR: esbuild failed to bundle $f — this will break Vercel deployment"
+      npx esbuild "$f" --bundle --format=esm --platform=browser --outfile=/dev/null
+      exit 1
+    }
+  done < <(find api/ -name "*.js" -not -name "_*"; find api/ -maxdepth 1 -name "*.ts" -not -name "_*")
+else
+  echo "Edge function bundle check skipped (no api/, server/, or src/generated changes)."
+fi
+
+# Determine which test categories to run based on changed files
+# (CHANGED_FILES + RUN_ALL were computed above, before the invariant gates.)
+RUN_RESILIENCE=false
+RUN_SEED=false
+RUN_SERVER=false
+RUN_FRONTEND=false
+
+if echo "$CHANGED_FILES" | grep -q "^scripts/"; then RUN_SEED=true; fi
+if echo "$CHANGED_FILES" | grep -q "^server/"; then RUN_SERVER=true; fi
+if echo "$CHANGED_FILES" | grep -q "resilience"; then RUN_RESILIENCE=true; fi
+if echo "$CHANGED_FILES" | grep -q "^src/\|^api/"; then RUN_FRONTEND=true; fi
+# RUN_ALL means "run broad invariant checks below", not "run every unit test".
+# Touching tests/ used to trigger the full local suite, but that suite now
+# exceeds this hook's 300s budget. CI remains the full-suite merge gate; this
+# hook stays a fast pre-flight. (The package.json/tsconfig escalation happens
+# in the scoping block above.)
+
+# Test files that changed in this push — run these specifically when
+# RUN_ALL didn't fire, so editing a test doesn't escalate to the full
+# 10k-test suite. Matches both .mjs and .mts under tests/.
+TESTS_CHANGED=$(echo "$CHANGED_FILES" | grep -E "^tests/.*\.test\.(mjs|mts)$" | while read -r t; do [ -f "$t" ] && echo "$t"; done || true)
+
+# Compute SEED_TESTS and SERVER_TESTS up-front (rather than inside their
+# RUN_* blocks) so the TESTS_CHANGED subtraction below can deduplicate
+# against the SAME literal file list the category run will execute. The
+# RUN_SEED / RUN_SERVER blocks consume these same variables — single
+# source of truth prevents drift between "what runs" and "what's
+# subtracted from TESTS_CHANGED".
+SEED_TESTS=$(echo "$CHANGED_FILES" | grep "^scripts/" | sed 's|scripts/seed-\(.*\)\.mjs|tests/\1-seed.test.mjs|' | grep "^tests/" | while read -r t; do [ -f "$t" ] && echo "$t"; done)
+SERVER_TESTS=$(printf '%s\n' "tests/handlers.test.mts" "tests/server-handlers.test.mjs")
+
+# Subtract any test file that's already going to be run by a category
+# glob (RUN_RESILIENCE's resilience-* glob, RUN_SERVER's SERVER_TESTS
+# list, or RUN_SEED's derived SEED_TESTS list). Without this, a changed
+# resilience/handlers/seed test file is captured in BOTH the category run
+# AND the TESTS_CHANGED run, so the same test executes twice on every
+# push. Per greptile-apps review on PR #3928.
+#
+# IMPORTANT: gated on RUN_ALL != true. When RUN_ALL=true the category
+# runners below are skipped (only CI runs the full suite), so there's
+# nothing to dedup against — and subtracting category files unconditionally
+# would silently drop them from the TESTS_CHANGED runner too, since that
+# block runs regardless of RUN_ALL. Net effect of an unconditional dedup:
+# changed test files don't run anywhere locally when RUN_ALL fires.
+if [ "$RUN_ALL" != true ] && [ -n "$TESTS_CHANGED" ]; then
+  if [ "$RUN_RESILIENCE" = true ]; then
+    TESTS_CHANGED=$(echo "$TESTS_CHANGED" | grep -v "^tests/resilience-" || true)
+  fi
+  if [ "$RUN_SERVER" = true ]; then
+    # grep -vxF -f <(...): drop lines from TESTS_CHANGED that exactly
+    # match (full line, literal string, no regex) the SERVER_TESTS list.
+    # Exact literal match here — not a regex like (handlers|server-handlers)
+    # over (mjs|mts) — so we never strip a file from TESTS_CHANGED that
+    # the category run isn't actually going to execute.
+    TESTS_CHANGED=$(echo "$TESTS_CHANGED" | grep -vxF -f <(echo "$SERVER_TESTS") || true)
+  fi
+  if [ -n "$SEED_TESTS" ]; then
+    # grep -vxF -f <(...): drop lines from TESTS_CHANGED that exactly
+    # match (full line, literal string, no regex) any line in SEED_TESTS.
+    TESTS_CHANGED=$(echo "$TESTS_CHANGED" | grep -vxF -f <(echo "$SEED_TESTS") || true)
+  fi
+fi
+
+if [ "$RUN_ALL" = true ]; then
+  echo "Skipping local full unit test suite (${RUN_ALL_REASON:-broad check requested}; CI runs the full suite on PR open)."
+fi
+
+if [ "$RUN_ALL" != true ]; then
+  if [ "$RUN_RESILIENCE" = true ]; then
+    echo "Running resilience tests (resilience files changed)..."
+    timeout 120 npx tsx --test tests/resilience-*.test.mjs tests/resilience-*.test.mts || exit 1
+  fi
+  if [ "$RUN_SEED" = true ]; then
+    echo "Running seed tests (scripts/ changed)..."
+    if [ -n "$SEED_TESTS" ]; then
+      timeout 120 npx tsx --test $SEED_TESTS || exit 1
+    else
+      echo "  No matching seed tests found, skipping."
+    fi
+  fi
+  if [ "$RUN_SERVER" = true ]; then
+    echo "Running server handler tests (server/ changed)..."
+    # shellcheck disable=SC2086 — intentional word-split for tsx --test arglist
+    timeout 120 npx tsx --test $SERVER_TESTS || exit 1
+  fi
+  if [ "$RUN_RESILIENCE" = false ] && [ "$RUN_SEED" = false ] && [ "$RUN_SERVER" = false ] && [ -z "$TESTS_CHANGED" ]; then
+    echo "Skipping unit tests (frontend-only changes; CI runs the full suite on PR open)."
+  fi
+fi
+
+if [ -n "$TESTS_CHANGED" ]; then
+  echo "Running changed test files only..."
+  # shellcheck disable=SC2086 — intentional word-split for tsx --test arglist
+  timeout 120 npx tsx --test $TESTS_CHANGED || exit 1
+fi
+
+echo "Running edge function tests..."
+if [ "$RUN_FRONTEND" = true ] || [ "$RUN_ALL" = true ]; then
+  node --test tests/edge-functions.test.mjs || exit 1
+else
+  echo "  Skipped (no api/ or src/ changes)."
+fi
+
+echo "Running markdown lint..."
+if echo "$CHANGED_FILES" | grep -qE "\.md$|\.mdx$" || [ "$RUN_ALL" = true ]; then
+  npm run lint:md || exit 1
+else
+  echo "  Skipped (no markdown changes)."
+fi
+
+echo "Running MDX lint (Mintlify compatibility)..."
+if echo "$CHANGED_FILES" | grep -q "\.mdx$" || [ "$RUN_ALL" = true ]; then
+  node --test tests/mdx-lint.test.mjs || exit 1
+else
+  echo "  Skipped (no MDX changes)."
+fi
+
+echo "Running proto freshness check..."
+if git diff --name-only origin/main -- proto/ src/generated/ docs/api/ Makefile | grep -q .; then
+  # Only prepend $HOME/go/bin when buf is NOT already resolvable on the
+  # caller's PATH. An unconditional prepend would shadow a developer's
+  # preferred `buf` (e.g. Homebrew) with a potentially stale
+  # ~/go/bin/buf left over from an older `go install buf@<old>`, which
+  # is the exact mixed-version failure this PR is trying to eliminate.
+  # Plugin resolution is handled inside `make generate` via a pinned
+  # PLUGIN_DIR, so the hook no longer needs to prepend for plugin
+  # discovery — only for the `buf` binary itself, and only when there's
+  # no other candidate.
+  if ! command -v buf >/dev/null 2>&1 && [ -x "$HOME/go/bin/buf" ]; then
+    export PATH="$HOME/go/bin:$PATH"
+  fi
+  # Plugin-presence check: consider a plugin "available" if it's on
+  # PATH OR at the default `go install` location ($HOME/go/bin).
+  # `make generate` resolves plugins via its own PLUGIN_DIR (GOBIN,
+  # then first-entry GOPATH/bin), which matches the $HOME/go/bin
+  # default on almost every dev setup. Anything exotic (custom GOBIN
+  # not on PATH) still runs `make generate` cleanly because the
+  # Makefile's own plugin-executable guard fires there.
+  if command -v buf &>/dev/null && { command -v protoc-gen-ts-client &>/dev/null || [ -x "$HOME/go/bin/protoc-gen-ts-client" ]; }; then
+    make generate
+    if ! git diff --exit-code src/generated/ docs/api/; then
+      echo ""
+      echo "============================================================"
+      echo "ERROR: Proto-generated code is out of date."
+      echo "Run 'make generate' locally and commit the updated files."
+      echo "============================================================"
+      exit 1
+    fi
+    UNTRACKED=$(git ls-files --others --exclude-standard src/generated/ docs/api/)
+    if [ -n "$UNTRACKED" ]; then
+      echo ""
+      echo "============================================================"
+      echo "ERROR: Untracked generated files found:"
+      echo "$UNTRACKED"
+      echo "Run 'make generate' locally and commit the new files."
+      echo "============================================================"
+      exit 1
+    fi
+    echo "Proto-generated code is up to date."
+  else
+    echo "WARNING: buf or protoc plugins not installed, skipping proto freshness check."
+    echo "  Install with: make install-buf install-plugins"
+  fi
+else
+  echo "No proto-related changes, skipping."
+fi
+
+echo "Running pro-test bundle freshness check..."
+# public/pro/ is NOT built by Vercel — the root build script only runs the
+# main app's vite build. The /pro marketing app under pro-test/ must be
+# rebuilt manually and its output committed to public/pro/. If source
+# changes ship without the rebuild, production /pro serves the old bundle
+# (see PR #3227 → #3228: source fix merged but deploy still broken because
+# public/pro/ was stale).
+#
+# Scope to the BRANCH delta ($CHANGED_FILES, computed earlier from
+# `git diff origin/main...HEAD`), not the worktree, so unstaged local
+# pro-test/ scratch edits don't trigger a slow rebuild on unrelated
+# branches. RUN_ALL forces the check when the branch delta couldn't be
+# computed (matches the safety fallback used by the test runners above).
+#
+# Trigger on pro-test/, public/pro/, or the catalog/generator that feeds
+# pro-test/src/generated/tiers.json. Catalog-only pricing-copy changes are
+# otherwise able to ship stale /pro bundles because Vercel serves public/pro/
+# as committed bytes.
+if [ "$RUN_ALL" = true ] || echo "$CHANGED_FILES" | grep -qE "^(pro-test|public/pro)/|^convex/config/productCatalog\.ts$|^scripts/generate-product-config\.mjs$"; then
+  npx tsx scripts/generate-product-config.mjs >/dev/null || {
+    echo "ERROR: product config generation failed"
+    exit 1
+  }
+  if [ ! -d pro-test/node_modules ]; then
+    echo "  Installing pro-test deps..."
+    (cd pro-test && npm ci --cache "$npm_config_cache") || exit 1
+  fi
+  (cd pro-test && npm run build >/dev/null) || {
+    echo "ERROR: pro-test build failed"
+    exit 1
+  }
+  if ! git diff --exit-code src/config/products.generated.ts api/_product-fallback-prices.js pro-test/src/generated/tiers.json pro-test/src/locales/ public/pro/; then
+    echo ""
+    echo "============================================================"
+    echo "ERROR: product catalog, generated config, pro locales, or public/pro/ is stale."
+    echo "Vercel ships whatever is committed under public/pro/ —"
+    echo "it does NOT rebuild pro-test on deploy."
+    echo "Fix:"
+    echo "  npx tsx scripts/generate-product-config.mjs"
+    echo "  cd pro-test && npm run build && cd .."
+    echo "  git add src/config/products.generated.ts api/_product-fallback-prices.js pro-test/src/generated/tiers.json pro-test/src/locales/ public/pro/"
+    echo "  git commit --amend --no-edit"
+    echo "============================================================"
+    exit 1
+  fi
+  UNTRACKED=$(git ls-files --others --exclude-standard public/pro/)
+  if [ -n "$UNTRACKED" ]; then
+    echo ""
+    echo "============================================================"
+    echo "ERROR: Untracked files in public/pro/ after rebuild:"
+    echo "$UNTRACKED"
+    echo "Run: git add public/pro/ && git commit --amend --no-edit"
+    echo "============================================================"
+    exit 1
+  fi
+  echo "  pro-test bundle is up to date."
+else
+  echo "  Skipped (no pro-test/, public/pro/, product catalog, or product-config generator changes in branch)."
+fi
+
+echo "Running version sync check..."
+npm run version:check || exit 1
+
+# Record this tree as gate-green: a re-push of the identical tree (remote-side
+# failure, network blip, commit-message-only amend) skips straight past the
+# tree-dependent checks above. Any content change produces a new tree hash.
+if [ -n "$TREE_HASH" ]; then
+  echo "$TREE_HASH" > "$GATE_CACHE"
+fi
+echo "All pre-push gates passed — tree cached."

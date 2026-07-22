@@ -1,0 +1,978 @@
+import { escapeHtml } from '@/utils/sanitize';
+import { shuffle, debounce } from '@/utils';
+import { t } from '@/services/i18n';
+import { trackSearchUsed } from '@/services/analytics';
+import { getAllCommands, type Command } from '@/config/commands';
+import { isMobileDevice } from '@/utils';
+import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
+
+
+interface CommandResult {
+  command: Command;
+  score: number;
+}
+
+const CATEGORY_KEYS: Record<string, string> = {
+  navigate: 'commands.categories.navigate',
+  layers: 'commands.categories.layers',
+  panels: 'commands.categories.panels',
+  view: 'commands.categories.view',
+  actions: 'commands.categories.actions',
+  country: 'commands.categories.country',
+};
+
+function kebabToCamel(s: string): string {
+  return s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+function panelCommandTargetId(commandId: string): string | null {
+  if (!commandId.startsWith('panel:')) return null;
+  return commandId.slice(6).split('@')[0] || null;
+}
+
+function resolveCommandLabel(cmd: Command): string {
+  const colonIdx = cmd.id.indexOf(':');
+  if (colonIdx === -1) return cmd.label;
+  const prefix = cmd.id.slice(0, colonIdx);
+  const action = cmd.id.slice(colonIdx + 1);
+
+  switch (prefix) {
+    case 'nav':
+      return `${t('commands.prefixes.map')}: ${t('commands.regions.' + action, { defaultValue: cmd.label })}`;
+    case 'country-map':
+      return `${t('commands.prefixes.map')}: ${cmd.label}`;
+    case 'panel': {
+      const fallback = cmd.label.startsWith('Panel: ') ? cmd.label.slice(7) : cmd.label;
+      const panelId = panelCommandTargetId(cmd.id) ?? action;
+      const panelName = action.includes('@')
+        ? fallback
+        : t('panels.' + kebabToCamel(panelId), { defaultValue: fallback });
+      return `${t('commands.prefixes.panel')}: ${panelName}`;
+    }
+    case 'country':
+      return `${t('commands.prefixes.brief')}: ${cmd.label}`;
+    default: {
+      const i18nKey = `commands.labels.${cmd.id.replace(':', '.')}`;
+      const resolved = t(i18nKey, { defaultValue: '' });
+      return resolved || cmd.label;
+    }
+  }
+}
+
+function resolveCategoryLabel(cmd: Command): string {
+  const key = CATEGORY_KEYS[cmd.category];
+  return key ? t(key, { defaultValue: cmd.category }) : cmd.category;
+}
+
+export type SearchResultType = 'country' | 'news' | 'hotspot' | 'market' | 'prediction' | 'conflict' | 'base' | 'pipeline' | 'cable' | 'datacenter' | 'earthquake' | 'outage' | 'nuclear' | 'irradiator' | 'techcompany' | 'ailab' | 'startup' | 'techevent' | 'techhq' | 'accelerator' | 'exchange' | 'financialcenter' | 'centralbank' | 'commodityhub' | 'flight';
+
+export interface SearchResult {
+  type: SearchResultType;
+  id: string;
+  title: string;
+  subtitle?: string;
+  data: unknown;
+}
+
+interface SearchableSource {
+  type: SearchResultType;
+  items: { id: string; title: string; subtitle?: string; data: unknown }[];
+}
+
+const RECENT_SEARCHES_KEY = 'worldmonitor_recent_searches';
+const MAX_RECENT = 8;
+const MAX_RESULTS = 24;
+const MAX_COMMANDS = 5;
+
+interface SearchModalOptions {
+  placeholder?: string;
+}
+
+// Trailing-debounce window for per-keystroke search (#4537). Long enough to
+// coalesce fast typing, short enough to feel responsive on settle.
+const SEARCH_DEBOUNCE_MS = 180;
+
+export class SearchModal {
+  private container: HTMLElement;
+  private overlay: HTMLElement | null = null;
+  private input: HTMLInputElement | null = null;
+  private resultsList: HTMLElement | null = null;
+  private chipsContainer: HTMLElement | null = null;
+  private closeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  // Invalidates deferred mobile list population when the sheet closes before
+  // its first paint (or is immediately reopened).
+  private mobileInitialPopulationGeneration = 0;
+  // Debounce the per-keystroke search so fast typing runs the command match +
+  // sort once after settle, not on every input event — cuts INP processing
+  // time (#4537). Programmatic handleSearch() calls (filters, category select)
+  // stay immediate; only the input listener routes through this.
+  private debouncedSearch = debounce((): void => this.handleSearch(), SEARCH_DEBOUNCE_MS);
+  // The query last passed through handleSearch — lets keyboard nav detect when a
+  // debounced keystroke search is still pending (results stale vs. current input).
+  private lastSearchedQuery = '';
+  private viewportHandler: (() => void) | null = null;
+  private sources: SearchableSource[] = [];
+  private results: SearchResult[] = [];
+  private commandResults: CommandResult[] = [];
+  private selectedIndex = 0;
+  private recentSearches: string[] = [];
+  private onSelect?: (result: SearchResult) => void;
+  private onCommand?: (command: Command) => void;
+  private onQueryChange?: (rawInput: string) => void;
+  private onFlightSearch?: (callsign: string) => void;
+  private currentFlightCallsign: string | null = null;
+  private flightSearchFired = false;
+  private placeholder: string;
+  private activePanelIds: Set<string> = new Set();
+  /**
+   * Panels the user *could* enable on this variant (entitled superset),
+   * vs `activePanelIds` which is the currently-enabled subset. A panel in
+   * `available` but not `active` is rendered with an "Add" affordance and
+   * gets enabled on selection. When unset (size 0) we fall back to
+   * active-only gating for back-compat.
+   */
+  private availablePanelIds: Set<string> = new Set();
+  /**
+   * Caller-supplied predicate that returns true iff a `layer:<key>` command
+   * can actually execute right now (current renderer supports the layer +
+   * DeckGL gate for DeckGL-only layers). Hooked from SearchManager so
+   * renderer knowledge lives in one place. Defaults to "always true" when
+   * not set (back-compat for any instantiator that doesn't wire it).
+   */
+  private layerExecutableFn: (layerKey: string) => boolean = () => true;
+  private isMobile: boolean;
+  /** When true, results area shows the full command list (opt-in). Sourced from getAllCommands(); no separate list to maintain. */
+  private showingAllCommands = false;
+
+  constructor(container: HTMLElement, options?: SearchModalOptions) {
+    this.container = container;
+    this.placeholder = options?.placeholder || t('modals.search.placeholder');
+    this.isMobile = isMobileDevice();
+    this.loadRecentSearches();
+  }
+
+  public registerSource(type: SearchResultType, items: SearchableSource['items']): void {
+    const existingIndex = this.sources.findIndex(s => s.type === type);
+    if (existingIndex >= 0) {
+      this.sources[existingIndex] = { type, items };
+    } else {
+      this.sources.push({ type, items });
+    }
+  }
+
+  public setOnSelect(callback: (result: SearchResult) => void): void {
+    this.onSelect = callback;
+  }
+
+  public setOnCommand(callback: (command: Command) => void): void {
+    this.onCommand = callback;
+  }
+
+  public setOnQueryChange(callback: (rawInput: string) => void): void {
+    this.onQueryChange = callback;
+  }
+
+  public setOnFlightSearch(callback: (callsign: string) => void): void {
+    this.onFlightSearch = callback;
+  }
+
+  public refreshSearch(): void {
+    if (this.overlay) this.handleSearch();
+  }
+
+  public setActivePanels(panelIds: string[]): void {
+    this.activePanelIds = new Set(panelIds);
+  }
+
+  public setAvailablePanels(panelIds: string[]): void {
+    this.availablePanelIds = new Set(panelIds);
+  }
+
+  /** A panel command is shown iff enabled OR available-to-add (back-compat: active-only when no available set). */
+  private isPanelCommandVisible(panelId: string): boolean {
+    if (this.availablePanelIds.size === 0) return this.activePanelIds.has(panelId);
+    return this.activePanelIds.has(panelId) || this.availablePanelIds.has(panelId);
+  }
+
+  /** True when a panel command would add a currently-disabled panel (drives the "Add" affordance). */
+  private isAddablePanel(cmd: Command): boolean {
+    const id = panelCommandTargetId(cmd.id);
+    return !!id && !this.activePanelIds.has(id) && this.availablePanelIds.has(id);
+  }
+
+  public setLayerExecutableFn(fn: (layerKey: string) => boolean): void {
+    this.layerExecutableFn = fn;
+  }
+
+  public open(): void {
+    if (this.closeTimeoutId) {
+      clearTimeout(this.closeTimeoutId);
+      this.closeTimeoutId = null;
+      this.overlay?.remove();
+      this.overlay = null;
+    }
+    if (this.overlay) return;
+    this.isMobile = isMobileDevice();
+    // Clear stale flight results from previous session so they don't bleed through.
+    const flightIdx = this.sources.findIndex(s => s.type === 'flight');
+    if (flightIdx >= 0) this.sources[flightIdx] = { type: 'flight', items: [] };
+    this.currentFlightCallsign = null;
+    this.flightSearchFired = false;
+    this.createModal();
+    this.input?.focus();
+    this.showingAllCommands = false;
+    if (this.isMobile) {
+      this.scheduleMobileInitialPopulation();
+    } else {
+      this.showRecentOrEmpty();
+    }
+  }
+
+  public close(): void {
+    // Drop any pending debounced search so it can't fire against a torn-down modal.
+    this.debouncedSearch.cancel();
+    this.mobileInitialPopulationGeneration += 1;
+    if (this.viewportHandler && window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', this.viewportHandler);
+      this.viewportHandler = null;
+    }
+    if (this.overlay) {
+      this.overlay.classList.remove('open');
+      const remove = () => {
+        this.overlay?.remove();
+        this.overlay = null;
+        this.input = null;
+        this.resultsList = null;
+        this.chipsContainer = null;
+        this.results = [];
+        this.commandResults = [];
+        this.selectedIndex = 0;
+        this.currentFlightCallsign = null;
+        this.flightSearchFired = false;
+      };
+      if (this.isMobile) {
+        this.closeTimeoutId = setTimeout(() => {
+          this.closeTimeoutId = null;
+          remove();
+        }, 300);
+      } else {
+        remove();
+      }
+    }
+  }
+
+  public isOpen(): boolean {
+    return this.overlay !== null;
+  }
+
+  /**
+   * Keep the tap frame limited to the sheet shell. The results list and command
+   * chips can create several nodes plus event listeners, which otherwise makes
+   * the first sheet presentation compete with the FAB interaction (#5158).
+   */
+  private scheduleMobileReveal(overlay: HTMLElement): void {
+    requestAnimationFrame(() => {
+      // The sheet can close or be replaced before its queued reveal runs. Do
+      // not let stale work reopen an outgoing or removed overlay.
+      if (this.overlay !== overlay || this.closeTimeoutId !== null) return;
+      overlay.classList.add('open');
+    });
+  }
+
+  private scheduleMobileInitialPopulation(): void {
+    const generation = ++this.mobileInitialPopulationGeneration;
+    // The first frame reveals the sheet; the second runs after that paint. Do
+    // not use the startup after-paint scheduler here: it can wait for load and
+    // idle time even though this is an already-interactive control.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // A close/reopen or an immediate keystroke owns the content now; never
+        // overwrite its current results with the initial empty/recent state.
+        if (generation !== this.mobileInitialPopulationGeneration || !this.overlay || this.input?.value) return;
+        this.showRecentOrEmpty();
+        this.renderChips();
+      });
+    });
+  }
+
+  private createModal(): void {
+    this.overlay = document.createElement('div');
+    this.overlay.setAttribute('role', 'dialog');
+    this.overlay.setAttribute('aria-modal', 'true');
+
+    if (this.isMobile) {
+      this.overlay.className = 'search-overlay search-mobile';
+      setTrustedHtml(this.overlay, trustedHtml(`
+        <div class="search-sheet">
+          <div class="search-sheet-handle"></div>
+          <div class="search-sheet-header">
+            <span class="search-sheet-icon">\u{1F50D}</span>
+            <input type="text" class="search-input" placeholder="${this.placeholder}" autofocus />
+            <button class="search-sheet-cancel" aria-label="Close">\u00D7</button>
+          </div>
+          <div class="search-sheet-chips"></div>
+          <div class="search-results"></div>
+        </div>
+      `, "legacy direct innerHTML migration"));
+
+      this.overlay.addEventListener('click', (e) => {
+        if (e.target === this.overlay) this.close();
+      });
+
+      this.overlay.querySelector('.search-sheet-cancel')?.addEventListener('click', () => this.close());
+
+      this.chipsContainer = this.overlay.querySelector('.search-sheet-chips');
+
+      this.container.appendChild(this.overlay);
+      this.scheduleMobileReveal(this.overlay);
+
+      const sheet = this.overlay.querySelector('.search-sheet') as HTMLElement | null;
+      if (sheet && window.visualViewport) {
+        const vv = window.visualViewport;
+        this.viewportHandler = () => {
+          if (!sheet.isConnected) return;
+          sheet.style.maxHeight = `${vv.height * 0.85}px`;
+        };
+        vv.addEventListener('resize', this.viewportHandler);
+      }
+    } else {
+      this.overlay.className = 'search-overlay';
+      setTrustedHtml(this.overlay, trustedHtml(`
+        <div class="search-modal">
+          <div class="search-header">
+            <span class="search-icon">\u2318</span>
+            <input type="text" class="search-input" placeholder="${this.placeholder}" autofocus />
+            <kbd class="search-kbd">ESC</kbd>
+          </div>
+          <div class="search-results"></div>
+          <div class="search-footer">
+            <span><kbd>\u2191\u2193</kbd> ${t('modals.search.navigate')}</span>
+            <span><kbd>\u21B5</kbd> ${t('modals.search.select')}</span>
+            <span><kbd>esc</kbd> ${t('modals.search.close')}</span>
+          </div>
+        </div>
+      `, "legacy direct innerHTML migration"));
+
+      this.overlay.addEventListener('click', (e) => {
+        if (e.target === this.overlay) this.close();
+      });
+
+      this.container.appendChild(this.overlay);
+    }
+
+    this.input = this.overlay.querySelector('.search-input');
+    this.resultsList = this.overlay.querySelector('.search-results');
+
+    this.input?.addEventListener('input', () => this.debouncedSearch());
+    this.input?.addEventListener('keydown', (e) => this.handleKeydown(e));
+  }
+
+  private matchCommands(query: string): CommandResult[] {
+    if (query.length < 2) return [];
+    const matched: CommandResult[] = [];
+    for (const cmd of getAllCommands()) {
+      const panelId = panelCommandTargetId(cmd.id);
+      if (panelId) {
+        if (!this.isPanelCommandVisible(panelId)) continue;
+      }
+      // Hide layer commands whose layer can't render under the current
+      // map renderer / DeckGL mode. Without this, CMD+K surfaces toggles
+      // that silently no-op (e.g. storageFacilities in globe mode, or
+      // flat-only DeckGL layers while on the SVG/mobile fallback).
+      if (cmd.id.startsWith('layer:')) {
+        const layerKey = cmd.id.slice(6);
+        if (!this.layerExecutableFn(layerKey)) continue;
+      }
+      const label = resolveCommandLabel(cmd).toLowerCase();
+      const allTerms = [...cmd.keywords, label];
+      let bestScore = 0;
+      for (const term of allTerms) {
+        if (term.includes(query) || (term.length >= 3 && query.includes(term))) {
+          const isExact = term === query;
+          const isPrefix = term.startsWith(query);
+          const score = isExact ? 3 : isPrefix ? 2 : 1;
+          if (score > bestScore) bestScore = score;
+        }
+      }
+      if (bestScore > 0) {
+        matched.push({ command: cmd, score: bestScore });
+      }
+    }
+    return matched.sort((a, b) => b.score - a.score).slice(0, MAX_COMMANDS);
+  }
+
+  private handleSearch(): void {
+    // A programmatic refresh can render while the mobile sheet's initial
+    // population is still deferred. Its results now own the list.
+    if (this.isMobile) this.mobileInitialPopulationGeneration += 1;
+    const rawInput = this.input?.value.toLowerCase() || '';
+    const query = rawInput.trim();
+    // Record what we actually searched so flushPendingSearch can detect stale results.
+    this.lastSearchedQuery = query;
+
+    if (!query) {
+      this.showingAllCommands = false;
+      this.commandResults = [];
+      this.showRecentOrEmpty();
+      if (this.isMobile) this.renderChips();
+      return;
+    }
+
+    this.onQueryChange?.(rawInput);
+
+    const byType = new Map<SearchResultType, (SearchResult & { _score: number })[]>();
+
+    // "flight {callsign}" prefix: bypass command matching entirely — "flight ek36" contains
+    // substrings like "light" that spuriously match unrelated commands (e.g. "Switch to light mode").
+    this.currentFlightCallsign = null;
+    this.flightSearchFired = false;
+    if (rawInput.startsWith('flight ') && this.onFlightSearch) {
+      const callsign = rawInput.slice(7).trim().toUpperCase();
+      if (callsign.length > 0) {
+        this.currentFlightCallsign = callsign;
+        this.commandResults = [];
+        const flightSource = this.sources.find(s => s.type === 'flight');
+        if (flightSource?.items.length) {
+          byType.set('flight', flightSource.items
+            .filter(item => item.title.toUpperCase().includes(callsign))
+            .map(item => ({
+              type: 'flight' as SearchResultType,
+              id: item.id,
+              title: item.title,
+              subtitle: item.subtitle,
+              data: item.data,
+              _score: item.title.toUpperCase().startsWith(callsign) ? 2 : 1,
+            })) as (SearchResult & { _score: number })[]);
+        }
+      }
+    } else {
+      this.commandResults = this.matchCommands(query);
+    }
+
+    for (const source of this.sources) {
+      for (const item of source.items) {
+        const titleLower = item.title.toLowerCase();
+        const subtitleLower = item.subtitle?.toLowerCase() || '';
+
+        if (titleLower.includes(query) || subtitleLower.includes(query)) {
+          const isPrefix = titleLower.startsWith(query) || subtitleLower.startsWith(query);
+          const result = {
+            type: source.type,
+            id: item.id,
+            title: item.title,
+            subtitle: item.subtitle,
+            data: item.data,
+            _score: isPrefix ? 2 : 1,
+          } as SearchResult & { _score: number };
+
+          if (!byType.has(source.type)) byType.set(source.type, []);
+          byType.get(source.type)!.push(result);
+        }
+      }
+    }
+
+    const priority: SearchResultType[] = [
+      'flight',
+      'news', 'prediction', 'market', 'earthquake', 'outage',
+      'conflict', 'hotspot', 'country',
+      'base', 'pipeline', 'cable', 'datacenter', 'nuclear', 'irradiator',
+      'techcompany', 'ailab', 'startup', 'techevent', 'techhq', 'accelerator'
+    ];
+
+    const maxResults = this.isMobile ? 5 : MAX_RESULTS;
+    this.results = [];
+    for (const type of priority) {
+      const matches = byType.get(type) || [];
+      matches.sort((a, b) => b._score - a._score);
+      const limit = this.isMobile ? 2 : (type === 'news' ? 6 : type === 'country' ? 4 : 3);
+      this.results.push(...matches.slice(0, limit));
+      if (this.results.length >= maxResults) break;
+    }
+    this.results = this.results.slice(0, maxResults);
+
+    trackSearchUsed(query.length, this.results.length + this.commandResults.length);
+    this.selectedIndex = 0;
+    this.renderResults();
+    if (this.isMobile) this.renderChips(query);
+  }
+
+  private showRecentOrEmpty(): void {
+    this.results = [];
+
+    if (this.showingAllCommands) {
+      this.renderAllCommandsList();
+      return;
+    }
+
+    if (this.recentSearches.length > 0) {
+      this.renderRecent();
+    } else {
+      this.renderEmpty();
+    }
+  }
+
+  private renderRecent(): void {
+    if (!this.resultsList) return;
+
+    setTrustedHtml(this.resultsList, trustedHtml(`<div class="search-section-header">${t('modals.search.recent')}</div>`, "legacy direct innerHTML migration"));
+
+    this.recentSearches.forEach((term, i) => {
+      const item = document.createElement('div');
+      item.className = `search-result-item recent${i === this.selectedIndex ? ' selected' : ''}`;
+      item.dataset.recent = term;
+
+      const icon = document.createElement('span');
+      icon.className = 'search-result-icon';
+      icon.textContent = '🕐';
+
+      const title = document.createElement('span');
+      title.className = 'search-result-title';
+      title.textContent = term;
+
+      item.appendChild(icon);
+      item.appendChild(title);
+
+      item.addEventListener('click', () => {
+        if (this.input) this.input.value = term;
+        this.handleSearch();
+      });
+
+      this.resultsList?.appendChild(item);
+    });
+
+    this.appendSeeAllCommandsLink();
+  }
+
+  private renderEmpty(): void {
+    if (!this.resultsList) return;
+
+    const tips: { icon: string; key: string; exampleKey: string }[] = [
+      { icon: '\u{1F30D}', key: 'commands.tips.map', exampleKey: 'commands.tips.mapExample' },
+      { icon: '\u{1F4CB}', key: 'commands.tips.panel', exampleKey: 'commands.tips.panelExample' },
+      { icon: '\u{1F4C4}', key: 'commands.tips.brief', exampleKey: 'commands.tips.briefExample' },
+      { icon: '\u{1F6E1}\uFE0F', key: 'commands.tips.layers', exampleKey: 'commands.tips.layersExample' },
+      { icon: '\u23F1\uFE0F', key: 'commands.tips.time', exampleKey: 'commands.tips.timeExample' },
+      { icon: '\u2699\uFE0F', key: 'commands.tips.settings', exampleKey: 'commands.tips.settingsExample' },
+    ];
+    if (this.sources.some(s => s.type === 'flight')) {
+      tips.push({ icon: '\u2708\uFE0F', key: 'commands.tips.flight', exampleKey: 'commands.tips.flightExample' });
+    }
+
+    const shuffled = shuffle(tips).slice(0, this.isMobile ? 2 : 4);
+
+    let html = `<div class="search-section-header">${t('modals.search.empty')}</div>`;
+    shuffled.forEach((tip, i) => {
+      const example = t(tip.exampleKey);
+      html += `
+        <div class="search-result-item tip-item${i === 0 ? ' selected' : ''}" data-tip-example="${escapeHtml(example)}">
+          <span class="search-result-icon">${tip.icon}</span>
+          <div class="search-result-content">
+            <div class="search-result-title">${escapeHtml(t(tip.key))}</div>
+          </div>
+          <kbd class="search-tip-example">${escapeHtml(example)}</kbd>
+        </div>`;
+    });
+
+    setTrustedHtml(this.resultsList, trustedHtml(html, "legacy direct innerHTML migration"));
+
+    this.resultsList.querySelectorAll('.tip-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const example = (el as HTMLElement).dataset.tipExample || '';
+        if (this.input) {
+          this.input.value = example;
+          this.handleSearch();
+        }
+      });
+    });
+
+    this.appendSeeAllCommandsLink();
+  }
+
+  private appendSeeAllCommandsLink(): void {
+    if (!this.resultsList) return;
+    const link = document.createElement('a');
+    link.href = '#';
+    link.className = 'search-all-commands-link';
+    link.textContent = t('modals.search.seeAllCommands');
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showingAllCommands = true;
+      this.renderAllCommandsList();
+    });
+    const wrap = document.createElement('div');
+    wrap.className = 'search-all-commands-wrap';
+    wrap.appendChild(link);
+    this.resultsList.appendChild(wrap);
+  }
+
+  /**
+   * Renders the full command list by category. Commands are sourced from
+   * getAllCommands(); no separate list to maintain. This view intentionally
+   * includes available-but-disabled panels (each tagged with an "Add" pill via
+   * isAddablePanel) so it doubles as a browse-and-add surface — the list is
+   * kept navigable by the collapsible per-category <details> grouping below.
+   */
+  private renderAllCommandsList(): void {
+    if (!this.resultsList) return;
+
+    const allCommands = getAllCommands();
+    const commands = allCommands.filter(cmd => {
+      if (cmd.id.startsWith('panel:')) {
+        const panelId = cmd.id.slice(6);
+        if (!this.isPanelCommandVisible(panelId)) return false;
+      }
+      if (cmd.id.startsWith('layer:')) {
+        if (!this.layerExecutableFn(cmd.id.slice(6))) return false;
+      }
+      return true;
+    });
+
+    const categoryOrder: Command['category'][] = ['navigate', 'layers', 'panels', 'view', 'actions', 'country'];
+    const byCategory = new Map<Command['category'], Command[]>();
+    for (const cat of categoryOrder) byCategory.set(cat, []);
+    for (const cmd of commands) {
+      const list = byCategory.get(cmd.category);
+      if (list) list.push(cmd);
+    }
+
+    let html = `
+      <div class="search-section-header search-command-list-back">
+        <a href="#" class="search-all-commands-back">${escapeHtml(t('modals.search.hideCommandList'))}</a>
+      </div>`;
+
+    for (const category of categoryOrder) {
+      const list = byCategory.get(category) || [];
+      if (list.length === 0) continue;
+      const first = list[0];
+      if (!first) continue;
+      const label = resolveCategoryLabel(first);
+      html += `<details class="search-command-category" open>`;
+      html += `<summary class="search-command-category-summary">${escapeHtml(label)}</summary>`;
+      html += `<div class="search-command-category-list">`;
+      for (const cmd of list) {
+        const addable = this.isAddablePanel(cmd);
+        const addLabel = t('modals.search.addPanel', { defaultValue: 'Add' });
+        const ariaLabel = addable ? ` aria-label="${escapeHtml(`${addLabel}: ${resolveCommandLabel(cmd)}`)}"` : '';
+        html += `
+          <div class="search-result-item command-item ${addable ? 'command-addable' : ''}" data-command="${escapeHtml(cmd.id)}"${ariaLabel}>
+            <span class="search-result-icon">${escapeHtml(cmd.icon)}</span>
+            <div class="search-result-content">
+              <div class="search-result-title">${escapeHtml(resolveCommandLabel(cmd))}</div>
+            </div>
+            ${addable ? `<span class="search-result-type search-result-type-add">${escapeHtml(addLabel)}</span>` : ''}
+          </div>`;
+      }
+      html += `</div></details>`;
+    }
+
+    setTrustedHtml(this.resultsList, trustedHtml(html, "legacy direct innerHTML migration"));
+
+    const backLink = this.resultsList.querySelector('.search-all-commands-back');
+    backLink?.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showingAllCommands = false;
+      this.showRecentOrEmpty();
+    });
+
+    this.resultsList.querySelectorAll('.search-command-category .command-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = (el as HTMLElement).dataset.command;
+        const command = getAllCommands().find(c => c.id === id);
+        if (command) {
+          this.onCommand?.(command);
+          this.close();
+        }
+      });
+    });
+  }
+
+  private get totalResultCount(): number {
+    return this.commandResults.length + this.results.length;
+  }
+
+  private renderResults(): void {
+    if (!this.resultsList) return;
+
+    if (this.commandResults.length === 0 && this.results.length === 0) {
+      if (this.currentFlightCallsign && this.onFlightSearch) {
+        if (this.flightSearchFired) {
+          setTrustedHtml(this.resultsList, trustedHtml(`
+            <div class="search-empty">
+              <div class="search-empty-icon">\u2708\uFE0F</div>
+              <div>${escapeHtml(t('modals.search.flightNotFound', { callsign: this.currentFlightCallsign }))}</div>
+            </div>`, "legacy direct innerHTML migration"));
+        } else {
+          this.renderFlightSearchTrigger(this.currentFlightCallsign);
+        }
+        return;
+      }
+      setTrustedHtml(this.resultsList, trustedHtml(`
+        <div class="search-empty">
+          <div class="search-empty-icon">\u2205</div>
+          <div>${t('modals.search.noResults')}</div>
+        </div>
+      `, "legacy direct innerHTML migration"));
+      return;
+    }
+
+    const icons: Record<SearchResultType, string> = {
+      country: '\u{1F3F3}\uFE0F',
+      news: '\u{1F4F0}',
+      hotspot: '\u{1F4CD}',
+      market: '\u{1F4C8}',
+      prediction: '\u{1F3AF}',
+      conflict: '\u2694\uFE0F',
+      base: '\u{1F3DB}\uFE0F',
+      pipeline: '\u{1F6E2}',
+      cable: '\u{1F310}',
+      datacenter: '\u{1F5A5}\uFE0F',
+      earthquake: '\u{1F30D}',
+      outage: '\u{1F4E1}',
+      nuclear: '\u2622\uFE0F',
+      irradiator: '\u269B\uFE0F',
+      techcompany: '\u{1F3E2}',
+      ailab: '\u{1F9E0}',
+      startup: '\u{1F680}',
+      techevent: '\u{1F4C5}',
+      techhq: '\u{1F984}',
+      accelerator: '\u{1F680}',
+      exchange: '\u{1F3DB}\uFE0F',
+      financialcenter: '\u{1F4B0}',
+      centralbank: '\u{1F3E6}',
+      commodityhub: '\u{1F4E6}',
+      flight: '✈',
+    };
+
+    let html = '';
+    let globalIndex = 0;
+
+    if (this.commandResults.length > 0) {
+      html += `<div class="search-section-header">${t('modals.search.commands')}</div>`;
+      for (const { command } of this.commandResults) {
+        const addable = this.isAddablePanel(command);
+        const addLabel = t('modals.search.addPanel', { defaultValue: 'Add' });
+        const typeLabel = addable ? addLabel : resolveCategoryLabel(command);
+        const ariaLabel = addable ? ` aria-label="${escapeHtml(`${addLabel}: ${resolveCommandLabel(command)}`)}"` : '';
+        html += `
+          <div class="search-result-item command-item ${addable ? 'command-addable' : ''} ${globalIndex === this.selectedIndex ? 'selected' : ''}" data-index="${globalIndex}" data-command="${escapeHtml(command.id)}"${ariaLabel}>
+            <span class="search-result-icon">${escapeHtml(command.icon)}</span>
+            <div class="search-result-content">
+              <div class="search-result-title">${escapeHtml(resolveCommandLabel(command))}</div>
+            </div>
+            <span class="search-result-type${addable ? ' search-result-type-add' : ''}">${escapeHtml(typeLabel)}</span>
+          </div>`;
+        globalIndex++;
+      }
+      if (this.results.length > 0) {
+        html += `<div class="search-section-header">${t('modals.search.results')}</div>`;
+      }
+    }
+
+    for (const result of this.results) {
+      html += `
+        <div class="search-result-item ${globalIndex === this.selectedIndex ? 'selected' : ''}" data-index="${globalIndex}">
+          <span class="search-result-icon">${icons[result.type]}</span>
+          <div class="search-result-content">
+            <div class="search-result-title">${this.highlightMatch(result.title)}</div>
+            ${result.subtitle ? `<div class="search-result-subtitle">${escapeHtml(result.subtitle)}</div>` : ''}
+          </div>
+          <span class="search-result-type">${escapeHtml(t(`modals.search.types.${result.type}`) || result.type)}</span>
+        </div>`;
+      globalIndex++;
+    }
+
+    setTrustedHtml(this.resultsList, trustedHtml(html, "legacy direct innerHTML migration"));
+
+    this.resultsList.querySelectorAll('.search-result-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const index = parseInt((el as HTMLElement).dataset.index || '0', 10);
+        this.selectResult(index);
+      });
+    });
+  }
+
+  private renderFlightSearchTrigger(callsign: string): void {
+    if (!this.resultsList) return;
+    setTrustedHtml(this.resultsList, trustedHtml(`
+      <div class="search-result-item selected" data-flight-trigger="${escapeHtml(callsign)}">
+        <span class="search-result-icon">\u2708\uFE0F</span>
+        <div class="search-result-content">
+          <div class="search-result-title">Search live flight <strong>${escapeHtml(callsign)}</strong></div>
+          <div class="search-result-subtitle">${escapeHtml(t('modals.search.flightSearchHint'))}</div>
+        </div>
+        <span class="search-result-type">${escapeHtml(t('modals.search.types.flight'))}</span>
+      </div>`, "legacy direct innerHTML migration"));
+    this.resultsList.querySelector('[data-flight-trigger]')?.addEventListener('click', () => {
+      this.triggerFlightSearch(callsign);
+    });
+  }
+
+  private triggerFlightSearch(callsign: string): void {
+    if (!this.onFlightSearch || !this.resultsList) return;
+    this.flightSearchFired = true;
+    setTrustedHtml(this.resultsList, trustedHtml(`
+      <div class="search-result-item">
+        <span class="search-result-icon">\u2708\uFE0F</span>
+        <div class="search-result-content">
+          <div class="search-result-title">Searching for <strong>${escapeHtml(callsign)}</strong>\u2026</div>
+        </div>
+      </div>`, "legacy direct innerHTML migration"));
+    this.onFlightSearch(callsign);
+  }
+
+  private renderChips(query?: string): void {
+    if (!this.chipsContainer) return;
+    if (query && query.length >= 1) {
+      setTrustedHtml(this.chipsContainer, trustedHtml('', "legacy direct innerHTML migration"));
+      return;
+    }
+
+    const chips: { label: string; value: string }[] = [];
+    const commands = getAllCommands();
+    const navCmds = commands.filter(c => c.id.startsWith('country:'));
+    for (const cmd of navCmds.slice(0, 6)) {
+      chips.push({ label: cmd.label, value: cmd.label.toLowerCase() });
+    }
+    const actionCmds = commands.filter(c => c.category === 'actions' || c.category === 'view');
+    for (const cmd of actionCmds.slice(0, 4)) {
+      const label = resolveCommandLabel(cmd);
+      chips.push({ label, value: label.toLowerCase() });
+    }
+
+    setTrustedHtml(this.chipsContainer, trustedHtml(chips.map(c =>
+      `<button class="search-chip" data-value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</button>`
+    ).join(''), "legacy direct innerHTML migration"));
+
+    this.chipsContainer.querySelectorAll('.search-chip').forEach(el => {
+      el.addEventListener('click', () => {
+        const val = (el as HTMLElement).dataset.value || '';
+        if (this.input) {
+          this.input.value = val;
+          this.handleSearch();
+        }
+      });
+    });
+  }
+
+  private highlightMatch(text: string): string {
+    const query = this.input?.value.trim() || '';
+    const escapedText = escapeHtml(text);
+    if (!query) return escapedText;
+
+    const escapedQuery = escapeHtml(query);
+    const regex = new RegExp(`(${escapedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return escapedText.replace(regex, '<mark>$1</mark>');
+  }
+
+  // Run a pending debounced search synchronously when the input has changed since
+  // the last search, so keyboard nav/selection acts on current results.
+  private flushPendingSearch(): void {
+    const current = (this.input?.value.toLowerCase() ?? '').trim();
+    if (current !== this.lastSearchedQuery) {
+      this.debouncedSearch.cancel();
+      this.handleSearch();
+    }
+  }
+
+  private handleKeydown(e: KeyboardEvent): void {
+    // The keystroke search is debounced (180ms). Flush it before Arrow/Enter so
+    // selection runs against results for the CURRENT query, not stale ones from
+    // before the debounce fired (#4537 follow-up — review #4556).
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
+      this.flushPendingSearch();
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        this.moveSelection(1);
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        this.moveSelection(-1);
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (this.currentFlightCallsign && this.onFlightSearch && this.results.length === 0 && this.commandResults.length === 0) {
+          this.triggerFlightSearch(this.currentFlightCallsign);
+          return;
+        }
+        this.selectResult(this.selectedIndex);
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.close();
+        break;
+    }
+  }
+
+  private moveSelection(delta: number): void {
+    const max = this.totalResultCount || this.recentSearches.length;
+    if (max === 0) return;
+
+    this.selectedIndex = (this.selectedIndex + delta + max) % max;
+    this.updateSelection();
+  }
+
+  private updateSelection(): void {
+    if (!this.resultsList) return;
+
+    this.resultsList.querySelectorAll('.search-result-item').forEach((el, i) => {
+      el.classList.toggle('selected', i === this.selectedIndex);
+    });
+
+    const selected = this.resultsList.querySelector('.selected');
+    selected?.scrollIntoView({ block: 'nearest' });
+  }
+
+  private selectResult(index: number): void {
+    if (this.totalResultCount === 0 && this.recentSearches.length > 0) {
+      const term = this.recentSearches[index];
+      if (term && this.input) {
+        this.input.value = term;
+        this.handleSearch();
+      }
+      return;
+    }
+
+    if (index < this.commandResults.length) {
+      const cmd = this.commandResults[index]?.command;
+      if (cmd) {
+        this.close();
+        this.onCommand?.(cmd);
+        return;
+      }
+    }
+
+    const entityIndex = index - this.commandResults.length;
+    const result = this.results[entityIndex];
+    if (!result) return;
+
+    this.saveRecentSearch(this.input?.value.trim() || '');
+    this.close();
+    this.onSelect?.(result);
+  }
+
+  private loadRecentSearches(): void {
+    try {
+      const stored = localStorage.getItem(RECENT_SEARCHES_KEY);
+      this.recentSearches = stored ? JSON.parse(stored) : [];
+    } catch {
+      this.recentSearches = [];
+    }
+  }
+
+  private saveRecentSearch(term: string): void {
+    if (!term || term.length < 2) return;
+
+    this.recentSearches = [
+      term,
+      ...this.recentSearches.filter(t => t !== term)
+    ].slice(0, MAX_RECENT);
+
+    try {
+      localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(this.recentSearches));
+    } catch {
+      // Storage full, ignore
+    }
+  }
+}

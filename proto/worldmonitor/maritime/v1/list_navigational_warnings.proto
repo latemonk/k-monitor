@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package worldmonitor.maritime.v1;
+
+import "sebuf/http/annotations.proto";
+import "worldmonitor/core/v1/pagination.proto";
+import "worldmonitor/maritime/v1/vessel_snapshot.proto";
+
+// ListNavigationalWarningsRequest specifies filters for retrieving NGA warnings.
+message ListNavigationalWarningsRequest {
+  // Maximum items per page (1-100).
+  // Accepted but currently ignored; no-op until this handler supports the parameter.
+  int32 page_size = 1 [(sebuf.http.query) = { name: "page_size" }, (sebuf.http.unimplemented) = true];
+  // Cursor for next page.
+  // Accepted but currently ignored; no-op until this handler supports the parameter.
+  string cursor = 2 [(sebuf.http.query) = { name: "cursor" }, (sebuf.http.unimplemented) = true];
+  // Optional area filter (e.g., "NAVAREA IV", "Persian Gulf").
+  string area = 3 [(sebuf.http.query) = { name: "area" }];
+}
+
+// ListNavigationalWarningsResponse contains navigational warnings matching the request.
+message ListNavigationalWarningsResponse {
+  // The list of navigational warnings.
+  repeated NavigationalWarning warnings = 1;
+  // Pagination metadata.
+  worldmonitor.core.v1.PaginationResponse pagination = 2;
+}
