@@ -47,10 +47,12 @@ export async function getCountryRisk(
     getCachedJson(SANCTIONS_COUNTS_KEY, true),
   ]);
 
-  // Any missing upstream key: fail closed to prevent CDN-caching of partial
-  // data as if it were valid (e.g. sanctionsActive:false or cii:undefined when
-  // the Redis key itself is simply absent, not just untracked for this country).
-  if (sanctionsRaw === null || riskRaw === null || advisoriesRaw === null) {
+  // KCG fork: the self-hosted pod only runs the sanctions seed (OFAC) —
+  // the CII risk cache and travel advisories crons don't exist here. Fail
+  // closed ONLY when every source is missing; otherwise serve what we have
+  // (upstream failed closed on any missing key to avoid CDN-caching partial
+  // data, which starved the sanctions card even with 20k seeded entries).
+  if (sanctionsRaw === null && riskRaw === null && advisoriesRaw === null) {
     return {
       countryCode: code,
       countryName: resolveCountryName(code, (advisoriesRaw as any)?.byCountryName),
@@ -71,7 +73,7 @@ export async function getCountryRisk(
 
   const byCountryName: Record<string, string> | undefined = (advisoriesRaw as any)?.byCountryName;
 
-  const sanctionsCount = (sanctionsRaw as Record<string, number>)[code] ?? 0;
+  const sanctionsCount = (sanctionsRaw as Record<string, number> | null)?.[code] ?? 0;
 
   return {
     countryCode: code,
