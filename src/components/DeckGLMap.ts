@@ -6808,13 +6808,19 @@ export class DeckGLMap {
   }
 
   public setCenter(lat: number, lon: number, zoom?: number): void {
-    if (this.maplibreMap) {
+    // KCG fork(07-24): maplibre 생성 전 호출이 조용히 무시돼 부팅 시
+    // URL lat/lon·저장된 지도 뷰 복원이 전부 증발했다(openChokepoint 와
+    // 같은 함정). 렌더러 준비를 기다렸다가 적용한다.
+    const apply = () => {
+      if (this.destroyed || !this.maplibreMap) return;
       this.maplibreMap.flyTo({
         center: [lon, lat],
         ...(zoom != null && { zoom }),
         duration: 500,
       });
-    }
+    };
+    if (this.maplibreMap) { apply(); return; }
+    void this.whenReady().then(apply).catch(() => {});
   }
 
   public fitCountry(code: string): void {
