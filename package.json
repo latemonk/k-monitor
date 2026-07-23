@@ -202,6 +202,7 @@
     "srvx": "^0.11.13",
     "protobufjs": "^7.6.2",
     "ws": "$ws",
-    "shell-quote": "^1.8.4"
+    "shell-quote": "^1.8.4",
+    "sharp": "^0.35.3"
   }
 }

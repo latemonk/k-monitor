@@ -73,7 +73,11 @@ export interface EntitlementCheckOptions {
  * Tier-2 here would have made the new gate stricter than the legacy one and
  * 403'd real Pro subscribers calling via Clerk session (no tester key).
  */
-const ENDPOINT_ENTITLEMENTS: Record<string, number> = {
+// KCG fork: getRequiredTier() below is hard-disabled (single-tenant, no Pro
+// tiering), so this map is no longer read at runtime. Kept and exported for
+// upstream merge parity — future syncs from World Monitor diff cleanly and
+// re-enabling tiering is a one-line revert in getRequiredTier.
+export const ENDPOINT_ENTITLEMENTS: Record<string, number> = {
   '/api/forecast/v1/trigger-simulation': 1,
   '/api/intelligence/v1/classify-event': 1,
   '/api/market/v1/analyze-stock': 1,

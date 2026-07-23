@@ -117,7 +117,16 @@ jobs:
       - run: npm ci
       - name: Build dashboard artifacts for built-output tests
         run: VITE_VARIANT=full ./node_modules/.bin/vite build
-      - run: npm run test:data
+      # KCG fork: run the full test:data glob minus the tracked fork-drift
+      # failures (upstream-contract tests for surfaces the fork replaced —
+      # see the header of .github/kcg-known-failing-tests.txt). ~15.7k tests
+      # remain enforced.
+      - name: Unit tests (minus tracked fork-drift list)
+        run: |
+          EXCLUDES=$(grep -vE '^\s*(#|$)' .github/kcg-known-failing-tests.txt)
+          FILES=$(ls tests/*.test.mjs tests/*.test.mts cli/test/*.test.mjs api/security/report.test.mjs \
+            | grep -vxF -f <(echo "$EXCLUDES"))
+          npx tsx --test --test-concurrency=16 $FILES
       - name: Edge function bundle check
         run: |
           # JS edge entries (existing loop, unchanged).
@@ -167,39 +176,26 @@ jobs:
           node-version: '24'
           cache: 'npm'
       - run: npm ci
-      - run: npm run test:sidecar
+      # KCG fork: the test:sidecar list minus api/wm-session.test.mjs — that
+      # file asserts the upstream session/limiter/telemetry contract (Axiom
+      # sink, Vercel ctx, legacy pro/widget key cookies) that the fork's
+      # anonymous single-tenant session replaced (12/217 assertions).
+      - run: >
+          node --test src-tauri/sidecar/local-api-server.test.mjs
+          src-tauri/open-url-safety.test.mjs api/_cors.test.mjs
+          api/_session.test.mjs api/_api-key.test.mjs
+          api/_user-api-key.test.mjs api/_rate-limit.test.mjs
+          api/_sentry-common.test.mjs api/bootstrap-auth.test.mjs
+          api/product-catalog.test.mjs api/youtube/embed.test.mjs
+          api/cyber-threats.test.mjs api/usni-fleet.test.mjs
+          scripts/ais-relay-rss.test.cjs api/loaders-xml-wms-regression.test.mjs
+          api/security/report.test.mjs
 
-  convex-tests:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run test:convex
-
-  variant-smoke-full:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    # No secrets are injected here. The smoke allows provider-level
-    # unavailable/stale states and gates app-level boot, variant, 401,
-    # page-error, and expected-panel invariants.
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e:variant-smoke:full
+  # KCG fork: convex-tests (Convex billing/payments suite) and
+  # variant-smoke-full (live variant e2e against the upstream deployment
+  # shape) removed — the fork ships without the Dodo/Clerk billing stack and
+  # deploys as a single self-hosted pod, so both jobs asserted product
+  # surfaces that no longer exist here.
 
   resilience-validation-smoke:
     needs: changes

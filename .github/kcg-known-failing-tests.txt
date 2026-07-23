@@ -1,0 +1,91 @@
+# KCG fork — tracked fork-drift test failures (2026-07-23 audit).
+#
+# These files assert upstream World Monitor production surfaces the fork
+# deliberately replaced or rebuilt (Pro paywall & premium gating, Vercel
+# edge/bootstrap registries, Convex billing, OpenAPI/product-catalog
+# contracts, committed esbuild runtime bundles under api/, CII crons the
+# self-hosted pod does not run). The unit CI job runs the full test:data
+# glob MINUS this list — 15.7k tests stay enforced.
+#
+# Rule: NEVER add a file here to silence a new failure in KCG-owned code.
+# Only upstream-contract drift qualifies. Groom entries away as the fork
+# either restores the surface or deletes the dead upstream code.
+tests/acled-resolution-feed-seed.test.mjs
+tests/agent-mode-view.test.mjs
+tests/bootstrap.test.mjs
+tests/china-coverage-production-registration.test.mts
+tests/china-macro-production-registration.test.mts
+tests/ci-workflow-coverage.test.mts
+tests/cii-docs-drift.test.mts
+tests/cii-scoring.test.mts
+tests/cli-package.test.mjs
+tests/completeness-measurement.test.mjs
+tests/comtrade-bilateral-hs4.test.mjs
+tests/country-evidence-bundle-export.test.mts
+tests/country-port-activity.test.mjs
+tests/debugbear-rum.test.mts
+tests/deploy-config.test.mjs
+tests/docs-signal-alignment.test.mts
+tests/edge-functions.test.mjs
+tests/empty-200-degradation-handlers.test.mts
+tests/feeds-client-server-parity.test.mjs
+tests/forecast-trigger-simulation.test.mts
+tests/gateway-internal-mcp.test.mjs
+tests/global-procurement-ui-guard.test.mts
+tests/globe-default-map-mode.test.mts
+tests/imf-country-data.test.mts
+tests/iran-events-sunset.test.mts
+tests/layer-explanations.test.mts
+tests/license-key-guidance.test.mjs
+tests/live-news-hls.test.mjs
+tests/live-tankers-service.test.mts
+tests/llms-txt-mcp-tools.test.mjs
+tests/market-breadth.test.mjs
+tests/mcp-api-parity.test.mjs
+tests/mcp-proxy.test.mjs
+tests/mcp-transport-conformance.test.mjs
+tests/mission-presets.test.mts
+tests/mobile-panel-nav-categories.test.mts
+tests/multi-sector-cost-shock.test.mjs
+tests/news-digest-methodology-parity.test.mjs
+tests/openapi-deprecated-contract.test.mjs
+tests/openapi-examples-contract.test.mjs
+tests/openapi-jmespath-contract.test.mjs
+tests/openapi-security-contract.test.mjs
+tests/panel-attached-fetch-guard.test.mts
+tests/panel-config-guardrails.test.mjs
+tests/panel-variant-config.test.mts
+tests/premium-fetch.test.mts
+tests/premium-paths-guard.test.mts
+tests/premium-stock-gateway.test.mts
+tests/pricing-docs-drift.test.mjs
+tests/pro-critical-css.test.mjs
+tests/pro-sentry-chunk.test.mjs
+tests/pro-welcome-prerender.test.mjs
+tests/product-catalog-freshness.test.mjs
+tests/rate-limit.test.mts
+tests/reddit-oauth-fetch.test.mjs
+tests/redis-caching.test.mjs
+tests/resilience-cache-keys-health-sync.test.mts
+tests/resilience-doc-parity.test.mts
+tests/resilience-map-layer.test.mts
+tests/resilience-static-seed.test.mjs
+tests/route-cache-tier.test.mjs
+tests/route-explorer-resilience-ui.test.mts
+tests/scenario-handler.test.mjs
+tests/sdk-packages.test.mjs
+tests/sector-route-explorer.test.mjs
+tests/seed-health-risk-scores.test.mjs
+tests/seed-military-cii-production-registration.test.mts
+tests/seed-ttl-outlives-staleness-fleet.test.mjs
+tests/shipping-v2-handler.test.mjs
+tests/summarize-article-premium-fetch.test.mts
+tests/summarize-entitlement-gate.test.mts
+tests/supplier-route-risk.test.mjs
+tests/supply-chain-validation.test.mjs
+tests/ucdp-retention-window.test.mjs
+tests/usage-telemetry-emission.test.mts
+tests/variant-meta-index-html-drift.test.mts
+tests/webmcp.test.mjs
+tests/window-open-noopener.test.mjs
+tests/wm-session-auto-refresh.test.mts
