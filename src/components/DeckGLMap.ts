@@ -1352,6 +1352,11 @@ export class DeckGLMap {
   // KCG fork(07-23): 줌 재로딩 방지 — 마지막 페치가 커버한 bbox 를 기억하고
   // 현재 뷰포트가 그 안(부분집합)이면 재페치하지 않는다.
   private lastAircraftFetchBounds: { swLat: number; swLon: number; neLat: number; neLon: number } | null = null;
+  // KCG fork(07-23 사장님 지시): 다른 지역 갔다 돌아와도 그 지역 캐시가
+  // 신선하면 즉시 기존 데이터를 보여주고 재로딩하지 않는다. 최근 페치한
+  // 지역들을 bbox+시각과 함께 보관(최대 10개·60초 신선).
+  private aircraftRegionCache: Array<{ swLat: number; swLon: number; neLat: number; neLon: number; positions: PositionSample[]; at: number }> = [];
+  private static readonly AIRCRAFT_REGION_TTL_MS = 60_000;
   private aircraftFetchSeq = 0;
 
   constructor(container: HTMLElement, initialState: DeckMapState, options: DeckGLMapOptions = {}) {
@@ -7343,9 +7348,24 @@ export class DeckGLMap {
     const bounds = this.maplibreMap.getBounds();
     const sw = bounds.getSouthWest();
     const ne = bounds.getNorthEast();
-    // KCG fork(07-23 사장님: 왔다갔다 하면 또 로딩): 뷰포트보다 넓게(각 변
-    // 스팬의 60% 패딩) 받아, 소폭 패닝/줌은 이미 받아둔 영역 안이라 재페치가
-    // 안 걸리게 한다. adsb.lol point/radius 는 250nm 캡이라 한국권 패딩은 무해.
+    // KCG fork(07-23 사장님 지시): 다른 지역 갔다 돌아온 경우 — 그 지역이
+    // 이미 캐시에 있고 신선(60초 이내)하면 네트워크 없이 즉시 복원하고,
+    // 다음 폴 주기에 새로 받는다("일단 기존꺼 보여주다가 주기에 갱신").
+    const nowTs = Date.now();
+    const cached = this.aircraftRegionCache.find((r) =>
+      nowTs - r.at < DeckGLMap.AIRCRAFT_REGION_TTL_MS &&
+      sw.lat >= r.swLat && sw.lng >= r.swLon && ne.lat <= r.neLat && ne.lng <= r.neLon);
+    if (cached) {
+      this.aircraftPositions = cached.positions;
+      this.onAircraftPositionsUpdate?.(cached.positions);
+      this.lastAircraftFetchBounds = { swLat: cached.swLat, swLon: cached.swLon, neLat: cached.neLat, neLon: cached.neLon };
+      this.setLayerReady('flights', cached.positions.length > 0);
+      this.render();
+      return;
+    }
+    // KCG fork(07-23): 뷰포트보다 넓게(각 변 스팬의 60% 패딩) 받아, 소폭
+    // 패닝/줌은 이미 받아둔 영역 안이라 재페치가 안 걸리게 한다. adsb.lol
+    // point/radius 는 250nm 캡이라 한국권 패딩은 무해.
     const latPad = Math.max(0.5, Math.abs(ne.lat - sw.lat) * 0.6);
     const lonPad = Math.max(0.5, Math.abs(ne.lng - sw.lng) * 0.6);
     const fSwLat = sw.lat - latPad, fSwLon = sw.lng - lonPad;
@@ -7360,6 +7380,11 @@ export class DeckGLMap {
       this.aircraftPositions = positions;
       this.onAircraftPositionsUpdate?.(positions);
       this.lastAircraftFetchBounds = { swLat: fSwLat, swLon: fSwLon, neLat: fNeLat, neLon: fNeLon };
+      // 지역 캐시에 적재(같은 지역 재방문 시 즉시 복원). 최신 10개 유지.
+      this.aircraftRegionCache = this.aircraftRegionCache.filter((r) =>
+        !(sw.lat >= r.swLat && sw.lng >= r.swLon && ne.lat <= r.neLat && ne.lng <= r.neLon));
+      this.aircraftRegionCache.push({ swLat: fSwLat, swLon: fSwLon, neLat: fNeLat, neLon: fNeLon, positions, at: Date.now() });
+      if (this.aircraftRegionCache.length > 10) this.aircraftRegionCache.shift();
       this.setLayerReady('flights', positions.length > 0);
       this.render();
     }).catch((err) => {

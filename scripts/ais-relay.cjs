@@ -7725,17 +7725,16 @@ let vesselApiLastSweep = [];
 // (간헐) + 울릉권이 전부. 서해·서남해·제주·동해중부 커버는 aisstream 병행
 // 없이는 불가.
 const VESSELAPI_TILES = [
-  // KCG fork(07-23): 실시간 실험 — 최밀집 부산 타일 페이지 4→8(콜당 50척,
-  // nextToken 없으면 조기 종료라 초과 배정은 무해), 인천 1→2.
-  { lat: 34.8, lon: 128.9, pages: 8 }, // 남해·대한해협(부산·거제·통영) — 최밀집
-  { lat: 37.3, lon: 125.6, pages: 2 }, // 서해 중부(인천·서해5도)
+  // KCG fork(07-23): 유료 콜 절약 위해 실험 확장(부산8·인천2) 원복 → 원래
+  // 페이지로. 1시간 주기 × 6콜/스윕 ≈ 144콜/day 수준(사장님 지시).
+  { lat: 34.8, lon: 128.9, pages: 3 }, // 남해·대한해협(부산·거제·통영) — 최밀집
+  { lat: 37.3, lon: 125.6, pages: 1 }, // 서해 중부(인천·서해5도)
   { lat: 36.3, lon: 130.2, pages: 1 }, // 동해 남부(울산·포항)
   { lat: 37.6, lon: 131.2, pages: 1 }, // 동해 중부(독도·울릉)
 ];
-// KCG fork(07-23 사장님 지시): 하한 1h → 1min. 쿼터는 플랜 업글로 해결
-// 방침 — 성능(실시간성·선박 수) 우선 실험. 기본값은 종전 6h 유지, 팟 env
-// VESSELAPI_SWEEP_INTERVAL_MS 로 조정한다.
-const VESSELAPI_SWEEP_INTERVAL_MS = Math.max(60_000, Number(process.env.VESSELAPI_SWEEP_INTERVAL_MS) || 6 * 3600_000);
+// KCG fork(07-23): 유료 콜 절반 소진(사장님 확인) → 기본 1시간 주기로.
+// 팟 env VESSELAPI_SWEEP_INTERVAL_MS 로 조정하되 하한 30분(과도한 콜 방지).
+const VESSELAPI_SWEEP_INTERVAL_MS = Math.max(30 * 60_000, Number(process.env.VESSELAPI_SWEEP_INTERVAL_MS) || 3600_000);
 const VESSELAPI_MONTHLY_CAP = Math.max(100, Number(process.env.VESSELAPI_MONTHLY_CAP) || 1450);
 const VESSELAPI_QUOTA_TTL_S = 40 * 86400; // outlives the month it counts
 const VESSELAPI_LAST_SWEEP_KEY = 'vesselapi:sweep:last:v1';

@@ -275,7 +275,7 @@ export class KcgVesselsPanel extends Panel {
     }));
     return safeHtml`
       <div class="kcgv-wrap">
-        <div class="kcgv-total">전체 포착 <strong>${String(this.total)}척</strong> (중복 제외) · 위치 수신 4시간 주기</div>
+        <div class="kcgv-total">전체 포착 <strong>${String(this.total)}척</strong> (중복 제외) · 위치 수신 약 1시간 주기</div>
         ${zoneRows}
         <div class="kcgv-hint">수신망 사정에 따라 일부 해역(서해 남부·제주 먼바다)은 실제보다 선박이 적게 보일 수 있어요.</div>
       </div>`;
