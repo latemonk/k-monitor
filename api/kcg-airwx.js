@@ -438,6 +438,15 @@ async function handler(req) {
       if (!byIcao) {
         byIcao = await fetchNoaaMetar();
         source = "noaa";
+      } else {
+        // IWXXM 에는 METAR 원문이 없다 — 항공 종사자용 raw 전문만 NOAA 에서
+        // 보강(실패해도 해독값은 그대로).
+        try {
+          const noaa = await fetchNoaaMetar();
+          for (const [icao, m] of byIcao) {
+            if (!m.raw && noaa.get(icao)) m.raw = noaa.get(icao).raw || "";
+          }
+        } catch { /* 원문 없이 진행 */ }
       }
       const airports = AIRPORTS.map((a) => {
         const m = byIcao.get(a.icao) || null;
