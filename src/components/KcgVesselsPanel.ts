@@ -34,10 +34,10 @@ interface ZoneRow {
 
 type TabId = 'status' | 'search' | 'watch' | 'ports';
 
-const PORTS: Array<{ unlocode: string; nameKo: string }> = [
-  { unlocode: 'KRPUS', nameKo: '부산' },
-  { unlocode: 'KRINC', nameKo: '인천' },
-  { unlocode: 'KRUSN', nameKo: '울산' },
+const PORTS: Array<{ unlocode: string; nameKo: string; lat: number; lon: number }> = [
+  { unlocode: 'KRPUS', nameKo: '부산', lat: 35.10, lon: 129.04 },
+  { unlocode: 'KRINC', nameKo: '인천', lat: 37.45, lon: 126.60 },
+  { unlocode: 'KRUSN', nameKo: '울산', lat: 35.50, lon: 129.38 },
 ];
 
 function agoKo(ts: number | null): string {
@@ -222,6 +222,8 @@ export class KcgVesselsPanel extends Panel {
         .kcgv-sec-title { font-weight: 700; color: #7fd4ff; font-size: 11.5px; margin-top: 4px; }
         .kcgv-port-chips { display: flex; gap: 4px; }
         .kcgv-evt { display: flex; gap: 7px; align-items: baseline; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .kcgv-evt-focus { cursor: pointer; }
+        .kcgv-evt-focus:hover { background: rgba(0,209,255,0.08); }
         .kcgv-evt-arr { color: #7ee2a8; font-weight: 700; font-size: 10.5px; }
         .kcgv-evt-dep { color: #ffab73; font-weight: 700; font-size: 10.5px; }
         .kcgv-evt-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -386,11 +388,12 @@ export class KcgVesselsPanel extends Panel {
     this.render();
   }
 
-  private addVesselWatch(mmsi: string, name: string): void {
+  private addVesselWatch(mmsi: string, name: string): boolean {
     const ok = getKcgWatchlist().add({ kind: 'vessel', id: mmsi, label: name || mmsi });
     showToast(ok ? `${name || mmsi} 추적을 시작했어요` : '이미 추적 중이거나 한도(10척)를 넘었어요');
     getKcgWatchlist().requestNotifyPermission();
     this.render();
+    return ok;
   }
 
   /** 검색 결과 상세 — 최근 위치·목적지·ETA (조회 한도 절약을 위해 클릭 시에만). */
@@ -544,9 +547,9 @@ export class KcgVesselsPanel extends Panel {
       body = safeHtml`<div class="kcgv-hint">최근 24시간 입출항 기록이 없어요.</div>`;
     } else {
       body = joinSafeHtml(slot.events.slice(0, 30).map((e) => safeHtml`
-        <div class="kcgv-evt">
+        <div class="kcgv-evt kcgv-evt-focus" data-evt-mmsi="${e.vesselMmsi || ''}" title="지도에서 보기 (MMSI ${e.vesselMmsi || '—'})">
           <span class="${e.eventType === 'arrival' ? 'kcgv-evt-arr' : 'kcgv-evt-dep'}">${e.eventType === 'arrival' ? '입항' : '출항'}</span>
-          <span class="kcgv-evt-name" title="MMSI ${e.vesselMmsi || '—'}">${e.vesselName ? e.vesselName.toUpperCase() : '(선명 미상)'}</span>
+          <span class="kcgv-evt-name">${e.vesselName ? e.vesselName.toUpperCase() : '(선명 미상)'}</span>
           <span class="kcgv-evt-time">${agoKo(e.occurredAt)}</span>
         </div>`));
     }
@@ -565,6 +568,31 @@ export class KcgVesselsPanel extends Panel {
         this.activePort = code;
         if (!this.portEvents.has(code)) void this.loadPortEvents(code);
         this.render();
+      };
+    });
+    // 입출항 기록 클릭 → 지도 포커스(사장님 지시 07-23). 입출항 이벤트는
+    // 좌표가 없어 ①현재 선박 스냅샷에서 MMSI 로 실시간 위치를 찾고
+    // ②없으면 해당 항구 좌표로 이동한다.
+    this.content.querySelectorAll('.kcgv-evt-focus').forEach((el) => {
+      (el as HTMLElement).onclick = () => {
+        const mmsi = (el as HTMLElement).dataset.evtMmsi || '';
+        let lat: number | null = null;
+        let lon: number | null = null;
+        if (mmsi) {
+          for (const z of this.zonesRaw) {
+            const hit = z.tankers.find((t) => t.mmsi === mmsi);
+            if (hit) { lat = hit.lat; lon = hit.lon; break; }
+          }
+        }
+        if (lat == null || lon == null) {
+          const port = PORTS.find((p) => p.unlocode === this.activePort);
+          if (port) { lat = port.lat; lon = port.lon; }
+        }
+        if (lat == null || lon == null) return;
+        try {
+          window.dispatchEvent(new CustomEvent('kcg:map-focus', { detail: { lat, lon, zoom: 10 } }));
+          showToast(mmsi ? '지도를 해당 선박 위치로 옮겼어요' : '지도를 해당 항만으로 옮겼어요');
+        } catch { /* SSR/테스트 */ }
       };
     });
   }
@@ -615,14 +643,14 @@ export class KcgVesselsPanel extends Panel {
         const hot = flag.iso === 'KP' || flag.iso === 'XX';
         const watched = watch.isWatched('vessel', v.mmsi);
         return safeHtml`
-          <tr class="${hot ? 'kcgv-row-hot' : ''}">
-            <td class="kcgv-td-name">${v.name || '(선명 미상)'}</td>
+          <tr class="${hot ? 'kcgv-row-hot' : ''}" data-row-mmsi="${v.mmsi}">
+            <td class="kcgv-td-name kcgv-td-focus" data-focus-lat="${String(v.lat)}" data-focus-lon="${String(v.lon)}" title="지도에서 보기">${v.name || '(선명 미상)'}</td>
             <td>${flagEmoji(flag.iso)} ${flag.nameKo}</td>
             <td>${shipTypeKo(v.shipType)}</td>
             <td>${Number.isFinite(spd) ? `${spd.toFixed(1)} kn` : '—'}</td>
             <td>${Number.isFinite(cog) && cog < 360 ? `${Math.round(cog)}°` : '—'}</td>
             <td class="kcgv-td-mmsi">${v.mmsi}</td>
-            <td>${watched
+            <td class="kcgv-td-watch">${watched
               ? safeHtml`<span class="kcgv-badge kcgv-badge-ok">추적 중</span>`
               : safeHtml`<button class="kcgv-btn kcgv-btn-sm" data-table-watch="${v.mmsi}" data-table-name="${v.name || ''}">추적</button>`}</td>
           </tr>`;
@@ -647,6 +675,8 @@ export class KcgVesselsPanel extends Panel {
         .kcgv-table th { text-align: left; color: var(--text-dim,#8aa); font-size: 11px; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.12); }
         .kcgv-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); white-space: nowrap; }
         .kcgv-td-name { font-weight: 600; color: var(--text,#e8f2fa); }
+        .kcgv-td-focus { cursor: pointer; }
+        .kcgv-td-focus:hover { color: #7fd4ff; text-decoration: underline; }
         .kcgv-td-mmsi { font-family: monospace; color: var(--text-dim,#9ab); }
         .kcgv-row-hot td { background: rgba(231,60,60,0.10); }
       </style>`;
@@ -660,13 +690,38 @@ export class KcgVesselsPanel extends Panel {
     `, () => this.bindTableWatchButtons(this.content));
   }
 
-  /** 상세 테이블(모달·확대)의 「추적」 버튼 바인딩. */
+  /** 상세 테이블(모달·확대)의 「선명 클릭=포커스」 + 「추적」 버튼 바인딩. */
   private bindTableWatchButtons(root: ParentNode): void {
+    // 선명 클릭 → 지도를 해당 선박 위치로 이동(사장님 지시 07-23).
+    root.querySelectorAll('.kcgv-td-focus').forEach((el) => {
+      (el as HTMLElement).onclick = () => {
+        const lat = Number((el as HTMLElement).dataset.focusLat);
+        const lon = Number((el as HTMLElement).dataset.focusLon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        try {
+          window.dispatchEvent(new CustomEvent('kcg:map-focus', { detail: { lat, lon, zoom: 9 } }));
+          showToast('지도를 해당 선박 위치로 옮겼어요');
+        } catch { /* SSR/테스트 */ }
+      };
+    });
     root.querySelectorAll('[data-table-watch]').forEach((el) => {
       (el as HTMLElement).onclick = () => {
-        const mmsi = (el as HTMLElement).dataset.tableWatch || '';
-        const name = (el as HTMLElement).dataset.tableName || '';
-        if (mmsi) this.addVesselWatch(mmsi, name);
+        const btn = el as HTMLElement;
+        const mmsi = btn.dataset.tableWatch || '';
+        const name = btn.dataset.tableName || '';
+        if (!mmsi) return;
+        const ok = this.addVesselWatch(mmsi, name);
+        // 사장님 지시: 토스트뿐 아니라 버튼이 즉시 '추적 중'으로 바뀌게.
+        if (ok) {
+          const cell = btn.closest('.kcgv-td-watch') ?? btn.parentElement;
+          if (cell) {
+            cell.textContent = '';
+            const badge = document.createElement('span');
+            badge.className = 'kcgv-badge kcgv-badge-ok';
+            badge.textContent = '추적 중';
+            cell.appendChild(badge);
+          }
+        }
       };
     });
   }

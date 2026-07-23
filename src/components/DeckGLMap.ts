@@ -822,6 +822,20 @@ export class DeckGLMap {
   private kcgAircraftCard: HTMLDivElement | null = null;
   private kcgAircraftCardFields: Map<string, HTMLElement> = new Map();
 
+  /** 공역 항공기 현황 패널 → 항공기 선택(궤적+상세 카드). */
+  private kcgSelectAircraftListener = (e: Event): void => {
+    const d = (e as CustomEvent<{ icao24?: string; lat?: number; lon?: number }>).detail;
+    if (!d?.icao24) return;
+    const icao = d.icao24.toLowerCase();
+    const existing = this.aircraftPositions.find((p) => (p.icao24 || '').toLowerCase() === icao);
+    const sample: PositionSample = existing ?? {
+      icao24: icao, callsign: '', lat: Number(d.lat), lon: Number(d.lon),
+      altitudeFt: 0, groundSpeedKts: 0, trackDeg: 0, verticalRateMps: 0,
+      onGround: false, source: '', observedAt: new Date(), squawk: '',
+    };
+    if (Number.isFinite(sample.lat) && Number.isFinite(sample.lon)) this.selectAircraft(sample);
+  };
+
   /** AirlineIntelPanel 추적 리스트 → 지도 하이라이트 (window 이벤트 배선). */
   private kcgHighlightListener = (e: Event): void => {
     const d = (e as CustomEvent<{ icao24?: string; lat?: number; lon?: number }>).detail;
@@ -944,11 +958,15 @@ export class DeckGLMap {
 
     const card = document.createElement('div');
     card.className = 'kcg-aircraft-tracker-card';
+    // KCG fork(07-23 사장님 지시): 좌상단은 레이어 패널과 겹치고 헤더에
+    // 상단이 잘려서 → 지도 우측(넓은 여백)으로 이동. z-index 도 레이어
+    // 드롭다운(패널류) 위로 올린다.
     card.style.cssText = [
-      'position:absolute', 'top:10px', 'left:10px', 'z-index:40', 'width:250px',
-      'background:rgba(10,18,28,0.92)', 'border:1px solid rgba(0,209,255,0.25)',
+      'position:absolute', 'top:12px', 'right:12px', 'z-index:1200', 'width:258px',
+      'max-height:calc(100% - 24px)', 'overflow-y:auto',
+      'background:rgba(10,18,28,0.94)', 'border:1px solid rgba(0,209,255,0.3)',
       'border-radius:8px', 'padding:10px 12px', 'font-size:12px', 'color:#dce8f2',
-      'backdrop-filter:blur(6px)', 'box-shadow:0 4px 16px rgba(0,0,0,0.4)',
+      'backdrop-filter:blur(6px)', 'box-shadow:0 4px 20px rgba(0,0,0,0.5)',
       'pointer-events:auto',
     ].join(';');
 
@@ -1001,6 +1019,18 @@ export class DeckGLMap {
 
     this.container.append(card);
     this.kcgAircraftCard = card;
+
+    // KCG fork(07-23): 첫 폴이 오기 전 '—' 고착을 막으려고 클릭 시점의
+    // 뷰포트 스냅샷 값으로 즉시 시딩(고도·속도·트랙·스쿼크·위치).
+    this.updateKcgAircraftCard({
+      callsign: (d.callsign || '').trim() || undefined,
+      squawk: d.squawk || undefined,
+      lat: d.lat, lon: d.lon,
+      altBaroFt: typeof d.altitudeFt === 'number' && d.altitudeFt > 0 ? d.altitudeFt : null,
+      onGround: d.onGround,
+      gsKt: typeof d.groundSpeedKts === 'number' ? d.groundSpeedKts : null,
+      track: typeof d.trackDeg === 'number' ? d.trackDeg : null,
+    });
   }
 
   private updateKcgAircraftCard(live: {
@@ -1511,6 +1541,7 @@ export class DeckGLMap {
       (window as unknown as { __kcgMapCenter?: { lat: number; lon: number } }).__kcgMapCenter = { lat: c0.lat, lon: c0.lng };
     }
     window.addEventListener('kcg:highlight-aircraft', this.kcgHighlightListener);
+    window.addEventListener('kcg:select-aircraft', this.kcgSelectAircraftListener);
 
     let tileLoadOk = false;
     let tileErrorCount = 0;
@@ -3457,7 +3488,8 @@ export class DeckGLMap {
       getIcon: () => 'plane',
       iconAtlas: MARKER_ICONS.plane,
       iconMapping: AIRCRAFT_ICON_MAPPING,
-      getSize: (d) => (this.highlightedAircraft && d.icao24 === this.highlightedAircraft) ? 30 : (d.onGround ? 14 : 18),
+      // KCG fork(07-23 사장님 지시): adsb.lol 수준으로 확대 — 식별성 우선.
+      getSize: (d) => (this.highlightedAircraft && d.icao24 === this.highlightedAircraft) ? 40 : (d.onGround ? 18 : 28),
       getColor: (d) => {
         // KCG fork: 추적 리스트에서 선택한 항공기 하이라이트
         if (this.highlightedAircraft && d.icao24 === this.highlightedAircraft) {
@@ -3468,8 +3500,8 @@ export class DeckGLMap {
         return [r, g, b, 220] as [number, number, number, number];
       },
       getAngle: (d) => -d.trackDeg,
-      sizeMinPixels: 8,
-      sizeMaxPixels: 34,
+      sizeMinPixels: 14,
+      sizeMaxPixels: 44,
       sizeScale: 1,
       pickable: true,
       billboard: false,
@@ -3878,9 +3910,10 @@ export class DeckGLMap {
         return -deg;
       },
       getColor: (d) => shipTypeColor(d.shipType, flagFromMmsi(d.mmsi).iso),
-      getSize: 18,
-      sizeMinPixels: 10,
-      sizeMaxPixels: 26,
+      // KCG fork(07-23 사장님 지시): 식별 잘 되게 확대(항공기와 동일 정책).
+      getSize: 26,
+      sizeMinPixels: 14,
+      sizeMaxPixels: 34,
       // globe(3D)에서는 지표면에 붙인 평면 아이콘이 구면과 z-파이팅으로
       // 사라진다(사장님 실측 07-21) — 3D 는 빌보드로 띄워 렌더한다.
       billboard: this.globeProjection,
@@ -8288,6 +8321,7 @@ export class DeckGLMap {
   public destroy(): void {
     this.destroyed = true;
     window.removeEventListener('kcg:highlight-aircraft', this.kcgHighlightListener);
+    window.removeEventListener('kcg:select-aircraft', this.kcgSelectAircraftListener);
     this.stopTradeAnimation();
     this.activeFlightTrails.clear();
     this.clearTrailsBtn = null;

@@ -23,6 +23,7 @@ const FULL_PANELS: Record<string, PanelConfig> = {
   map: { name: '해양 상황도', enabled: true, priority: 1 },
   'kcg-breaking': { name: '실시간 속보', enabled: true, priority: 1 },
   'kcg-vessels': { name: '해역 선박 현황', enabled: true, priority: 1 },
+  'kcg-aircraft': { name: '공역 항공기 현황', enabled: true, priority: 1 },
   'kcg-alerts': { name: 'AI 이상 활동 감시', enabled: true, priority: 1 },
   'kcg-sea': { name: '해양 기상·수온', enabled: true, priority: 1 },
   'live-news': { name: '국내 뉴스 라이브', enabled: true, priority: 1 },
@@ -1206,6 +1207,7 @@ export const KCG_VISIBLE_PANELS: readonly string[] = [
   'map',           // 권역 상황
   'kcg-breaking',  // 실시간 속보
   'kcg-vessels',   // 해역 선박 현황
+  'kcg-aircraft',  // 공역 항공기 현황
   'kcg-alerts',    // AI 이상 활동 감시
   'kcg-sea',       // 해양 기상·수온
   'airline-intel', // 항공 운항 정보

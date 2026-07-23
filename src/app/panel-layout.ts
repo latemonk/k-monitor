@@ -1754,6 +1754,7 @@ export class PanelLayoutManager implements AppModule {
     this.lazyDefaultPanel('kcg-alerts', () => import('@/components/KcgAlertsPanel'), 'KcgAlertsPanel');
     this.lazyDefaultPanel('kcg-breaking', () => import('@/components/KcgBreakingPanel'), 'KcgBreakingPanel');
     this.lazyDefaultPanel('kcg-vessels', () => import('@/components/KcgVesselsPanel'), 'KcgVesselsPanel');
+    this.lazyDefaultPanel('kcg-aircraft', () => import('@/components/KcgAircraftPanel'), 'KcgAircraftPanel');
     this.lazyDefaultPanel('kcg-sea', () => import('@/components/KcgSeaPanel'), 'KcgSeaPanel');
     this.lazyPanel('pipeline-status', () =>
       this.importPanel('pipeline-status', () => import('@/components/PipelineStatusPanel'), 'PipelineStatusPanel', (PipelineStatusPanel) => new PipelineStatusPanel()),

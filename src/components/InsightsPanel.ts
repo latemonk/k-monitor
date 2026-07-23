@@ -671,11 +671,19 @@ export class InsightsPanel extends Panel {
 
       if (this.updateGeneration !== thisGeneration) return;
 
+      // KCG fork(07-23 사장님 지적): 본문과 출처 불일치 수정. worldBrief 는
+      // 캐시(쿨다운/영속)에서 온 옛 요약일 수 있는데, 그 경우 currentBriefSources
+      // (이번 사이클의 새 클러스터)로 폴백하면 "요약=A / 출처=B"가 된다.
+      // 요약과 출처는 항상 같은 출처(cachedBriefSources)로만 짝짓는다 —
+      // 새로 생성됐으면 이미 currentBriefSources 로 동기화돼 있고, 캐시본이면
+      // 그 캐시본의 출처가 붙는다. 캐시 출처가 비면 차라리 출처를 안 보인다.
+      const briefIsFresh = worldBrief === this.cachedBrief;
+      const pairedSources = briefIsFresh ? this.cachedBriefSources : currentBriefSources;
       this.renderInsights(
         importantItems,
         sentiments,
         worldBrief,
-        this.cachedBriefSources.length > 0 ? this.cachedBriefSources : currentBriefSources,
+        pairedSources,
       );
     } catch (error) {
       console.error('[InsightsPanel] Error:', error);
