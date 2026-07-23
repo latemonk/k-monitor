@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "World Monitor",
+  "productName": "K-Watch",
   "mainBinaryName": "world-monitor",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "identifier": "app.worldmonitor.desktop",
   "build": {
     "beforeDevCommand": "npm run build:sidecar-sebuf && node scripts/build-sidecar-handlers.mjs && npm run dev",

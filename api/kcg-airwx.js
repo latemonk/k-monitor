@@ -123,7 +123,7 @@ async function fetchNoaaMetar() {
   const ids = AIRPORTS.map((a) => a.icao).join(",");
   const resp = await fetch(
     "https://aviationweather.gov/api/data/metar?ids=" + ids + "&format=json",
-    { signal: AbortSignal.timeout(1e4), headers: { "User-Agent": "k-monitor-airwx" } }
+    { signal: AbortSignal.timeout(1e4), headers: { "User-Agent": "k-watch-airwx" } }
   );
   if (!resp.ok) throw new Error("noaa " + resp.status);
   return normalizeNoaa(await resp.json());

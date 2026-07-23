@@ -1,7 +1,7 @@
 // KCG v34 prod e2e — 실시간 속보 위젯·프리셋 브리프 커스터마이징·브리프 클릭 모달 실측
 import { chromium } from 'playwright-core';
 
-const URL = process.env.KCG_URL || 'https://k-monitor.onpod.ai';
+const URL = process.env.KCG_URL || 'https://k-watch.onpod.ai';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });

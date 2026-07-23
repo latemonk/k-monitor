@@ -2,7 +2,7 @@
 // 사용: node scripts/kcg-e2e-3d-vessels.mjs  → /tmp/kcg-2d.png, /tmp/kcg-3d.png
 import { chromium } from 'playwright-core';
 
-const URL = process.env.KCG_URL || 'https://kcg-monitor.onpod.ai';
+const URL = process.env.KCG_URL || 'https://k-watch.onpod.ai';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });

@@ -1,5 +1,5 @@
 # =============================================================================
-# K-Monitor(대한민국 AI 통합 관제) — all-in-one self-hosting image
+# K-Watch(대한민국 AI 통합 관제) — all-in-one self-hosting image
 # =============================================================================
 # The upstream self-hosted stack is 4 containers (app, redis, redis-rest
 # proxy, ais-relay). onpod deploys one container per app, so this image runs

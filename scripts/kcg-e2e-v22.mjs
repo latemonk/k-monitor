@@ -1,7 +1,7 @@
 // KCG v22 prod e2e — playwright로 3D globe·프리셋 모달·주제 칩 실측
 import { chromium } from 'playwright-core';
 
-const URL = process.env.KCG_URL || 'https://kcg-monitor.onpod.ai';
+const URL = process.env.KCG_URL || 'https://k-watch.onpod.ai';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });

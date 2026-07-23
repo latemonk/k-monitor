@@ -67,7 +67,7 @@ function parseTrace(raw) {
 async function fetchTrace(icao) {
   const suffix = icao.slice(-2);
   const resp = await fetch(`https://adsb.lol/data/traces/${suffix}/trace_recent_${icao}.json`, {
-    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) k-monitor" },
+    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) k-watch" },
     signal: AbortSignal.timeout(8e3)
   });
   if (resp.status === 404) return { found: false, points: [] };
@@ -90,7 +90,7 @@ async function fetchTrace(icao) {
 
 async function fetchLive(icao) {
   const resp = await fetch(`https://api.adsb.lol/v2/icao/${icao}`, {
-    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) k-monitor" },
+    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) k-watch" },
     signal: AbortSignal.timeout(8e3)
   });
   if (!resp.ok) throw new Error("live HTTP " + resp.status);

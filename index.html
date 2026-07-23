@@ -10,24 +10,24 @@
 /* KCG v5 one-time reset: apply the decluttered Korean default panel/layer/channel set over any stored pre-v5 state. */
 if(!localStorage.getItem('kcg-ui-v11')){['worldmonitor-panels','worldmonitor-layers','worldmonitor-live-channels','worldmonitor-active-channel','worldmonitor-disabled-feeds','worldmonitor-disabled-feeds-schema'].forEach(function(k){localStorage.removeItem(k);});/* wipe every persisted AI/summary artifact so nothing cached in English survives the Korean switch */for(var i=localStorage.length-1;i>=0;i--){var k=localStorage.key(i);if(k&&k.indexOf('worldmonitor-persistent-cache:')===0)localStorage.removeItem(k);}try{indexedDB.deleteDatabase('worldmonitor_persistent_cache');}catch(e){}/* v37 레이어 개편: 옛 URL 의 layers 딥링크가 새 디폴트를 덮지 않게 1회 제거 */try{var u=new URL(location.href);if(u.searchParams.has('layers')){u.searchParams.delete('layers');history.replaceState(null,'',u);}}catch(e){}localStorage.setItem('kcg-ui-v11','1');}
 }catch(e){}</script>
-    <title>대한민국 AI 통합 관제</title>
-    <meta name="title" content="코리아 모니터 — AI 권역 통합관제 플랫폼" />
+    <title>K-Watch — 대한민국 AI 통합 관제</title>
+    <meta name="title" content="K-Watch — AI 권역 통합관제 플랫폼" />
     <meta name="description" content="한국 권역의 선박·해양·안보·재난 정보를 실시간 감시하고 AI가 이상 활동을 판정하는 통합 관제 플랫폼" />
     <meta name="keywords" content="통합 관제, 권역 감시, 실시간 관제, 선박 감시, 항공 감시, 재난 감시, AI 관제 플랫폼" />
     <meta name="theme-color" content="#0a0f0a" />
     <meta name="robots" content="index, follow" />
-    <link rel="canonical" href="https://k-monitor.onpod.ai/" />
-    <link rel="alternate" hreflang="ko" href="https://k-monitor.onpod.ai/" />
+    <link rel="canonical" href="https://k-watch.onpod.ai/" />
+    <link rel="alternate" hreflang="ko" href="https://k-watch.onpod.ai/" />
 
-    <meta name="application-name" content="대한민국 AI 통합 관제" />
+    <meta name="application-name" content="K-Watch" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://k-monitor.onpod.ai/" />
-    <meta property="og:title" content="대한민국 AI 통합 관제" />
+    <meta property="og:url" content="https://k-watch.onpod.ai/" />
+    <meta property="og:title" content="K-Watch — 대한민국 AI 통합 관제" />
     <meta property="og:description" content="한국 권역의 선박·해양·안보·재난 정보를 실시간 감시하고 AI가 이상 활동을 판정하는 통합 관제 플랫폼" />
-    <meta property="og:image" content="https://k-monitor.onpod.ai/favico/apple-touch-icon.png" />
-    <meta property="og:site_name" content="대한민국 AI 통합 관제" />
+    <meta property="og:image" content="https://k-watch.onpod.ai/favico/apple-touch-icon.png" />
+    <meta property="og:site_name" content="K-Watch" />
     <meta property="og:locale" content="ko_KR" />
 
     <!-- JSON-LD Structured Data -->
@@ -35,8 +35,8 @@ if(!localStorage.getItem('kcg-ui-v11')){['worldmonitor-panels','worldmonitor-lay
     {
       "@context": "https://schema.org",
       "@type": "WebApplication",
-      "name": "대한민국 AI 통합 관제",
-      "url": "https://k-monitor.onpod.ai/",
+      "name": "K-Watch — 대한민국 AI 통합 관제",
+      "url": "https://k-watch.onpod.ai/",
       "description": "한국 권역의 선박·해양·안보·재난 정보를 실시간 감시하고 AI가 이상 활동을 판정하는 통합 관제 플랫폼",
       "applicationCategory": "SecurityApplication",
       "operatingSystem": "Web",

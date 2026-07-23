@@ -1,10 +1,10 @@
-# K-Monitor — 대한민국 AI 통합 관제 콘솔
+# K-Watch — 대한민국 AI 통합 관제 콘솔
 
 **Korea-first, AI-powered situational awareness console** — 한반도 권역의 뉴스·해양·항공·안보·재난 신호를 한 화면에서 실시간으로 감시하는 오픈소스 통합 관제 대시보드입니다.
 
-🔗 **라이브 데모**: https://k-monitor.onpod.ai
+🔗 **라이브 데모**: https://k-watch.onpod.ai
 
-[![Live Demo](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EB%B8%8C%20%EB%8D%B0%EB%AA%A8-k--monitor.onpod.ai-brightgreen?style=flat&logo=googlechrome&logoColor=white)](https://k-monitor.onpod.ai)
+[![Live Demo](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EB%B8%8C%20%EB%8D%B0%EB%AA%A8-k--watch.onpod.ai-brightgreen?style=flat&logo=googlechrome&logoColor=white)](https://k-watch.onpod.ai)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
@@ -12,7 +12,7 @@
 
 ## 프로젝트 소개
 
-K-Monitor는 [World Monitor](https://github.com/koala73/worldmonitor)(© Elie Habib, AGPL-3.0)의 뛰어난 대시보드 아키텍처를 기반으로 출발해, **한국 상황인식(situational awareness)에 필요한 거의 모든 것을 다시 만든 파생 프로젝트**입니다. UI 골격 외 데이터 계층 대부분을 한국 중심으로 재구축했고, 그 결과물 전체를 AGPL-3.0으로 다시 커뮤니티에 공개합니다.
+K-Watch는 [World Monitor](https://github.com/koala73/worldmonitor)(© Elie Habib, AGPL-3.0)의 뛰어난 대시보드 아키텍처를 기반으로 출발해, **한국 상황인식(situational awareness)에 필요한 거의 모든 것을 다시 만든 파생 프로젝트**입니다. UI 골격 외 데이터 계층 대부분을 한국 중심으로 재구축했고, 그 결과물 전체를 AGPL-3.0으로 다시 커뮤니티에 공개합니다.
 
 원본 대비 주요 변경·신규 개발:
 
@@ -36,11 +36,11 @@ K-Monitor는 [World Monitor](https://github.com/koala73/worldmonitor)(© Elie Ha
 ## 빠른 시작 (셀프호스팅)
 
 ```bash
-git clone https://github.com/latemonk/k-monitor.git
-cd k-monitor
+git clone https://github.com/latemonk/k-watch.git
+cd k-watch
 
 # all-in-one 이미지 (redis + AIS 릴레이 + API + nginx)
-docker build -f Dockerfile.onpod -t k-monitor .
+docker build -f Dockerfile.onpod -t k-watch .
 
 docker run -p 8080:8080 \
   -e AISSTREAM_API_KEY=... \
@@ -48,7 +48,7 @@ docker run -p 8080:8080 \
   -e LLM_API_URL=https://api.openai.com/v1 \
   -e LLM_API_KEY=... \
   -e LLM_MODEL=gpt-4o-mini \
-  k-monitor
+  k-watch
 ```
 
 → http://localhost:8080
@@ -73,7 +73,7 @@ docker run -p 8080:8080 \
 
 ## English Summary
 
-K-Monitor is a Korea-focused, AI-powered situational awareness console derived from [World Monitor](https://github.com/koala73/worldmonitor) by Elie Habib (AGPL-3.0). While it inherits the excellent dashboard architecture of the original, most of the data plane has been rebuilt for the Korean theater: Korean major-media news feeds and breaking-news streams, a dual-source AIS vessel relay (aisstream websocket + VesselAPI sweeps with an atomic monthly-quota engine), keyless military aviation tracking via adsb.lol, vessel/aircraft watchlists with anomaly alerts (signal loss, loitering, sharp turns, sensitive-water entry, emergency squawks), Korean-language AI insight briefs that work with any OpenAI-compatible LLM, port arrival/departure events for Busan/Incheon/Ulsan, full Korean localization, and a single-container self-hosting image. The upstream paid (PRO) gates were removed entirely and replaced with free public data sources (IMF, US Treasury, OFAC, UN Comtrade, World Bank).
+K-Watch is a Korea-focused, AI-powered situational awareness console derived from [World Monitor](https://github.com/koala73/worldmonitor) by Elie Habib (AGPL-3.0). While it inherits the excellent dashboard architecture of the original, most of the data plane has been rebuilt for the Korean theater: Korean major-media news feeds and breaking-news streams, a dual-source AIS vessel relay (aisstream websocket + VesselAPI sweeps with an atomic monthly-quota engine), keyless military aviation tracking via adsb.lol, vessel/aircraft watchlists with anomaly alerts (signal loss, loitering, sharp turns, sensitive-water entry, emergency squawks), Korean-language AI insight briefs that work with any OpenAI-compatible LLM, port arrival/departure events for Busan/Incheon/Ulsan, full Korean localization, and a single-container self-hosting image. The upstream paid (PRO) gates were removed entirely and replaced with free public data sources (IMF, US Treasury, OFAC, UN Comtrade, World Bank).
 
 We are deeply grateful to the original author — if you like this project, please star the [original World Monitor](https://github.com/koala73/worldmonitor) too.
 
@@ -84,7 +84,7 @@ We are deeply grateful to the original author — if you like this project, plea
 이 프로젝트는 **GNU AGPL-3.0**으로 배포됩니다. [LICENSE](LICENSE) 참조.
 
 - 원본: World Monitor — Copyright (C) 2024-2026 Elie Habib ([koala73/worldmonitor](https://github.com/koala73/worldmonitor))
-- 수정본: K-Monitor modifications — Copyright (C) 2026 AI3 Inc. ([latemonk](https://github.com/latemonk))
+- 수정본: K-Watch modifications — Copyright (C) 2026 AI3 Inc. ([latemonk](https://github.com/latemonk))
 - 이 저장소는 원본을 수정한 파생 저작물이며(수정일: 2026-07), 전체 소스가 AGPL-3.0 조건으로 공개됩니다. 네트워크로 이 소프트웨어를 서비스하는 경우 AGPL §13에 따라 이용자에게 소스 접근을 제공해야 합니다.
 
 ## 기여

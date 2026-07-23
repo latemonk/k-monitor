@@ -12,9 +12,9 @@ Only the latest version on the `main` branch is actively maintained and receives
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-If you discover a security vulnerability in K-Monitor, please report it responsibly:
+If you discover a security vulnerability in K-Watch, please report it responsibly:
 
-1. **GitHub Private Vulnerability Reporting**: Use [GitHub's private vulnerability reporting](https://github.com/latemonk/k-monitor/security/advisories/new) to submit your report directly through the repository.
+1. **GitHub Private Vulnerability Reporting**: Use [GitHub's private vulnerability reporting](https://github.com/latemonk/k-watch/security/advisories/new) to submit your report directly through the repository.
 
 2. **Direct Contact**: Alternatively, reach out to the repository owner [@latemonk](https://github.com/latemonk) directly through GitHub.
 
@@ -40,7 +40,7 @@ If you discover a security vulnerability in K-Monitor, please report it responsi
 
 ## Security Considerations
 
-K-Monitor is a client-side intelligence dashboard that aggregates publicly available data. Here are the key security areas:
+K-Watch is a client-side intelligence dashboard that aggregates publicly available data. Here are the key security areas:
 
 ### API Keys & Secrets
 
@@ -75,7 +75,7 @@ K-Monitor is a client-side intelligence dashboard that aggregates publicly avail
 
 ### Data Sources
 
-- K-Monitor aggregates publicly available OSINT data
+- K-Watch aggregates publicly available OSINT data
 - No classified or restricted data sources are used
 - State-affiliated sources are flagged with propaganda risk ratings
 - All data is consumed read-only — the platform does not modify upstream sources
@@ -84,7 +84,7 @@ K-Monitor is a client-side intelligence dashboard that aggregates publicly avail
 
 The following are **in scope** for security reports:
 
-- Vulnerabilities in the K-Monitor codebase
+- Vulnerabilities in the K-Watch codebase
 - Edge function security issues (SSRF, injection, auth bypass)
 - XSS or content injection through RSS feeds or external data
 - API key exposure or secret leakage
@@ -110,4 +110,4 @@ The following are **out of scope**:
 
 ---
 
-Thank you for helping keep K-Monitor and its users safe! 🔒
+Thank you for helping keep K-Watch and its users safe! 🔒
