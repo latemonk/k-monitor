@@ -1097,6 +1097,20 @@ export class DeckGLMap {
           return;
         }
         this.updateKcgAircraftCard(live);
+        // KCG fork(07-24 사장님 리포트): 폴링은 2초마다 돌아도 업스트림 수신기가
+        // 그 기체를 오래 못 들으면(커버리지 가장자리 — 동해 먼바다 등) 위치가
+        // 안 바뀐다. 이때 「실시간 추적 중」은 오해를 부르니 신호 나이를 정직하게.
+        const isEmergency = (live.squawk && ['7500', '7600', '7700'].includes(live.squawk)) || (live.emergency && live.emergency !== 'none');
+        if (status && !isEmergency) {
+          const age = live.seenPosSec;
+          if (typeof age === 'number' && age > 15) {
+            status.textContent = `수신 대기 — 마지막 위치 신호 ${Math.round(age)}초 전 (수신 범위 가장자리예요)`;
+            status.style.color = '#f0a020';
+          } else {
+            status.textContent = '실시간 추적 중 (2초 주기)';
+            status.style.color = '#5fbf7f';
+          }
+        }
         if (typeof live.lat === 'number' && typeof live.lon === 'number') {
           const altFt = live.altBaroFt ?? live.altGeomFt ?? 0;
           const last = this.selectedAircraftTrail[this.selectedAircraftTrail.length - 1];
