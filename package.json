@@ -1,7 +1,7 @@
 {
   "name": "world-monitor",
   "private": true,
-  "version": "2.11.0",
+  "version": "2.12.0",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -202,7 +202,6 @@
     "srvx": "^0.11.13",
     "protobufjs": "^7.6.2",
     "ws": "$ws",
-    "shell-quote": "^1.8.4",
-    "sharp": "^0.35.3"
+    "shell-quote": "^1.8.4"
   }
 }

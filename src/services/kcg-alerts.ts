@@ -447,6 +447,24 @@ class KcgAlertEngine {
       `■ 급강하(-15m/s 이상, 3,000ft 초과): ${rapidDescent.length ? rapidDescent.slice(0, 5).map(describe).join(' / ') : '없음'}`,
       `■ 저고도 고속(3,000ft 미만·250kt 이상): ${lowFast.length ? lowFast.slice(0, 5).map(describe).join(' / ') : '없음'}`,
     ];
+
+    // 공항 특보(공항경보·SIGMET·AIRMET)도 같은 요약에 붙여 항공기상 축까지
+    // 함께 판정하게 한다 — 실패해도 항공기 요약만으로 진행.
+    try {
+      const resp = await fetch(toApiUrl('/api/kcg-airwx?type=hazards'), { signal: AbortSignal.timeout(15_000) });
+      if (resp.ok) {
+        const h = (await resp.json()) as { available?: boolean; warnings?: Array<{ airport: string; type?: string; msg: string }>; sigmet?: Array<{ msg: string }>; airmet?: Array<{ msg: string }> };
+        if (h.available !== false) {
+          const all = [
+            ...(h.warnings || []).map((w) => `공항경보 ${w.airport}${w.type ? `(${w.type})` : ''}`),
+            ...(h.sigmet || []).map(() => 'SIGMET'),
+            ...(h.airmet || []).map(() => 'AIRMET'),
+          ];
+          lines.push(`■ 발효 중 공항 특보: ${all.length ? all.join(' / ') : '없음'}`);
+        }
+      }
+    } catch { /* 특보 조회 실패는 무시 */ }
+
     return lines.join('\n');
   }
 }
