@@ -7,7 +7,8 @@
  */
 import { Panel } from './Panel';
 import { safeHtml, joinSafeHtml, type SafeHtml } from '@/utils/sanitize';
-import { getKcgAlertEngine, type KcgAlertSettings, type KcgVerdict } from '@/services/kcg-alerts';
+import { getKcgAlertEngine, type KcgAlertDomain, type KcgAlertSettings, type KcgVerdict } from '@/services/kcg-alerts';
+import { getActiveKcgPreset, KCG_PRESET_CHANGED_EVENT } from '@/services/kcg-active-preset';
 import { showKcgModal } from '@/utils/kcg-modal';
 import { showToast } from '@/utils/toast';
 import { fetchLiveTankers } from '@/services/live-tankers';
@@ -35,18 +36,42 @@ function fmtTime(ts: number | null): string {
 export class KcgAlertsPanel extends Panel {
   private unsubscribe: (() => void) | null = null;
   private settingsOpen = false;
+  // KCG fork(07-24 사장님 지시): 공중 감시 프리셋에서는 항공기 감시로 전환.
+  private domain: KcgAlertDomain = getActiveKcgPreset() === 'air' ? 'aviation' : 'maritime';
 
   constructor() {
     super({
       id: 'kcg-alerts',
       title: 'AI 이상 활동 감시',
-      infoTooltip: '입력한 평소 기준과 경보 기준을 바탕으로 AI가 한국 근해 선박 활동을 주기적으로 판정해요. 기준에 걸리는 이상 활동이 보이면 경보를 올려요.',
+      infoTooltip: '입력한 평소 기준과 경보 기준을 바탕으로 AI가 주기적으로 판정해요. 해양 감시 탭에서는 한국 근해 선박 활동을, 공중 감시 탭에서는 한반도 권역 항공기 활동을 감시하고, 기준에 걸리는 이상 활동이 보이면 경보를 올려요.',
     });
-    const engine = getKcgAlertEngine();
-    this.unsubscribe = engine.subscribe(() => this.render());
-    engine.start();
+    this.attachEngine();
+    window.addEventListener(KCG_PRESET_CHANGED_EVENT, this.presetListener);
     this.render();
   }
+
+  private engine() {
+    return getKcgAlertEngine(this.domain);
+  }
+
+  private attachEngine(): void {
+    this.unsubscribe?.();
+    const engine = this.engine();
+    this.unsubscribe = engine.subscribe(() => this.render());
+    engine.start();
+  }
+
+  /** 프리셋 전환 → 도메인 스왑(이전 도메인 엔진은 멈춰 LLM 판정 낭비 방지). */
+  private presetListener = (): void => {
+    const next: KcgAlertDomain = getActiveKcgPreset() === 'air' ? 'aviation' : 'maritime';
+    if (next === this.domain) return;
+    const prev = this.engine();
+    this.domain = next;
+    prev.stop();
+    this.settingsOpen = false;
+    this.attachEngine();
+    this.render();
+  };
 
   public async fetchData(): Promise<void> {
     this.render();
@@ -55,13 +80,15 @@ export class KcgAlertsPanel extends Panel {
   public destroy(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    window.removeEventListener(KCG_PRESET_CHANGED_EVENT, this.presetListener);
     super.destroy();
   }
 
   private render(): void {
-    const engine = getKcgAlertEngine();
+    const engine = this.engine();
     const st = engine.getState();
     const cfg = engine.getSettings();
+    const av = this.domain === 'aviation';
 
     const statusLine = st.running
       ? safeHtml`<span class="kcg-dot kcg-dot-on"></span> 감시 중 · ${String(cfg.intervalMin)}분 주기 · 마지막 판정 ${fmtTime(st.lastRunAt)}`
@@ -79,7 +106,7 @@ export class KcgAlertsPanel extends Panel {
         </div>`
       : st.lastError
         ? safeHtml`<div class="kcg-verdict kcg-verdict-err">${st.lastError}</div>`
-        : safeHtml`<div class="kcg-verdict kcg-verdict-wait">첫 판정을 기다리는 중이에요 (선박 집계 후 자동 실행)</div>`;
+        : safeHtml`<div class="kcg-verdict kcg-verdict-wait">첫 판정을 기다리는 중이에요 (${av ? '항공기' : '선박'} 집계 후 자동 실행)</div>`;
 
     const alertsHtml = st.alerts.length
       ? joinSafeHtml(st.alerts.slice(0, 12).map((a) => safeHtml`
@@ -141,8 +168,8 @@ export class KcgAlertsPanel extends Panel {
       <div class="kcg-wrap">
         <div class="kcg-status">
           <div class="kcg-status-line">${statusLine}</div>
-          <div class="kcg-status-meta">포착 선박 ${String(st.vesselCount)}척 · 임계값 ${String(cfg.threshold)}점</div>
-          ${st.liveAis === false ? safeHtml`<span class="kcg-badge-demo">시뮬레이션 데이터</span>` : st.liveAis === true ? safeHtml`<span class="kcg-badge-live">실시간 AIS</span>` : safeHtml``}
+          <div class="kcg-status-meta">${av ? '감시 대상: 한반도 공역' : '감시 대상: 한국 근해'} · 포착 ${av ? `항공기 ${String(st.vesselCount)}대` : `선박 ${String(st.vesselCount)}척`} · 임계값 ${String(cfg.threshold)}점</div>
+          ${st.liveAis === false ? safeHtml`<span class="kcg-badge-demo">시뮬레이션 데이터</span>` : st.liveAis === true ? safeHtml`<span class="kcg-badge-live">${av ? '실시간 ADS-B' : '실시간 AIS'}</span>` : safeHtml``}
           <button id="kcgToggleSettings" class="kcg-btn kcg-btn-sm">${this.settingsOpen ? '설정 닫기' : '기준 설정'}</button>
         </div>
         ${settingsHtml}
@@ -204,7 +231,7 @@ export class KcgAlertsPanel extends Panel {
     });
 
     $('kcgSave')?.addEventListener('click', () => {
-      const engine = getKcgAlertEngine();
+      const engine = this.engine();
       const next: KcgAlertSettings = {
         enabled: ($<HTMLInputElement>('kcgEnabled'))?.checked ?? true,
         browserNotify: ($<HTMLInputElement>('kcgNotify'))?.checked ?? true,
@@ -222,30 +249,30 @@ export class KcgAlertsPanel extends Panel {
     });
 
     $('kcgRunNow')?.addEventListener('click', () => {
-      void getKcgAlertEngine().runOnce();
+      void this.engine().runOnce();
     });
 
     $('kcgClear')?.addEventListener('click', () => {
-      getKcgAlertEngine().clearAlerts();
+      this.engine().clearAlerts();
     });
 
     // 경보 항목/최근 판정 클릭 → 전체 판정 내용 모달
     this.content.querySelectorAll('.kcg-alert-clickable').forEach((el) => {
       el.addEventListener('click', () => {
         const id = (el as HTMLElement).dataset.alertId || '';
-        const alert = getKcgAlertEngine().getState().alerts.find((a) => a.id === id);
+        const alert = this.engine().getState().alerts.find((a) => a.id === id);
         if (alert) this.showVerdictDetail(alert, new Date(alert.ts));
       });
     });
     this.content.querySelector('.kcg-verdict:not(.kcg-verdict-err):not(.kcg-verdict-wait)')?.addEventListener('click', () => {
-      const st = getKcgAlertEngine().getState();
+      const st = this.engine().getState();
       if (st.lastVerdict) this.showVerdictDetail(st.lastVerdict, st.lastRunAt ? new Date(st.lastRunAt) : null);
     });
   }
 
   /** 판정 상세 모달 — changes 전체·caveats·요약 근거까지. */
   private showVerdictDetail(v: KcgVerdict, at: Date | null): void {
-    const st = getKcgAlertEngine().getState();
+    const st = this.engine().getState();
     showKcgModal(`AI 판정 상세 — ${v.anomaly_score}점 · ${SEV_LABEL[v.severity] ?? v.severity}`, safeHtml`
       <div style="font-weight:700;font-size:14px;margin-bottom:8px">${v.headline}</div>
       <div style="color:#9ab;font-size:11px;margin-bottom:12px">판정 시각 ${at ? at.toLocaleString('ko-KR', { hour12: false }) : '—'} · 신뢰도 ${v.confidence} · 모델 ${v.model ?? '—'}</div>

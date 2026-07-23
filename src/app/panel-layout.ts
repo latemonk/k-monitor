@@ -62,6 +62,7 @@ import { DEFAULT_MAP_LAYERS } from '@/config';
 import { getKcgNewsTopics } from '@/config/kcg-news-topics';
 import type { KcgWatchPreset } from '@/services/kcg-presets';
 import { setActiveKcgPreset } from '@/services/kcg-active-preset';
+import { loadKcgMapView } from '@/utils/kcg-map-view';
 import { applyPresetDefinitionToState } from '@/services/mission-presets';
 import { showKcgModalNode } from '@/utils/kcg-modal';
 import { showToast } from '@/utils';
@@ -912,6 +913,24 @@ export class PanelLayoutManager implements AppModule {
           tab.panelOrder.splice(mapIdx === -1 ? 0 : mapIdx + 1, 0, 'kcg-breaking');
           stampedLayers = true;
         }
+        // KCG fork(07-24 사장님 지시): 공중 감시 탭에 공항 기상·AI 이상 활동
+        // 감시 위젯 주입(도입 전에 만든 탭 치유 — kcg-breaking 패턴과 동일).
+        if (tab.kcgPreset === 'air') {
+          const anchor = () => {
+            const i = tab.panelOrder.indexOf('kcg-aircraft');
+            return i === -1 ? tab.panelOrder.length : i + 1;
+          };
+          if (!('kcg-airwx' in tab.panelSettings)) {
+            tab.panelSettings['kcg-airwx'] = { name: '공항 기상(METAR)', enabled: true, priority: 1 };
+            tab.panelOrder.splice(anchor(), 0, 'kcg-airwx');
+            stampedLayers = true;
+          }
+          if (!('kcg-alerts' in tab.panelSettings)) {
+            tab.panelSettings['kcg-alerts'] = { name: 'AI 이상 활동 감시', enabled: true, priority: 1 };
+            tab.panelOrder.splice(anchor() + 1, 0, 'kcg-alerts');
+            stampedLayers = true;
+          }
+        }
       }
       // 레이어 디폴트 개편(v37 — 선박·항공 ON·분쟁/기지 등 노이즈 OFF) 1회 반영:
       // 프리셋 탭=프리셋 레이어 정의로, 일반 탭=새 디폴트로 스냅샷 교체.
@@ -1755,6 +1774,7 @@ export class PanelLayoutManager implements AppModule {
     this.lazyDefaultPanel('kcg-breaking', () => import('@/components/KcgBreakingPanel'), 'KcgBreakingPanel');
     this.lazyDefaultPanel('kcg-vessels', () => import('@/components/KcgVesselsPanel'), 'KcgVesselsPanel');
     this.lazyDefaultPanel('kcg-aircraft', () => import('@/components/KcgAircraftPanel'), 'KcgAircraftPanel');
+    this.lazyDefaultPanel('kcg-airwx', () => import('@/components/KcgAirWeatherPanel'), 'KcgAirWeatherPanel');
     this.lazyDefaultPanel('kcg-sea', () => import('@/components/KcgSeaPanel'), 'KcgSeaPanel');
     this.lazyPanel('pipeline-status', () =>
       this.importPanel('pipeline-status', () => import('@/components/PipelineStatusPanel'), 'PipelineStatusPanel', (PipelineStatusPanel) => new PipelineStatusPanel()),
@@ -2506,9 +2526,18 @@ export class PanelLayoutManager implements AppModule {
   }
 
   private applyInitialUrlState(): void {
-    if (!this.ctx.initialUrlState || !this.ctx.map) return;
+    if (!this.ctx.map) return;
+    if (!this.ctx.initialUrlState) {
+      this.restoreSavedMapView();
+      return;
+    }
 
     const { view, zoom, lat, lon, timeRange, layers } = this.ctx.initialUrlState;
+    // KCG fork(07-24 사장님 지시): URL 이 카메라를 지정하지 않으면
+    // 지난 세션의 지도 위치/줌을 복원한다(레이어·시간범위만 있는 URL 포함).
+    if (!view && lat === undefined && lon === undefined && zoom === undefined) {
+      this.restoreSavedMapView();
+    }
 
     if (view) {
       // Pass URL zoom so the preset's default zoom doesn't overwrite it.
@@ -2542,6 +2571,13 @@ export class PanelLayoutManager implements AppModule {
     if (regionSelect && currentView) {
       regionSelect.value = currentView;
     }
+  }
+
+  /** KCG fork — 저장된 지도 위치/줌 복원 (URL 지정이 없을 때만 호출). */
+  private restoreSavedMapView(): void {
+    const saved = loadKcgMapView();
+    if (!saved || !this.ctx.map) return;
+    this.ctx.map.setCenter(saved.lat, saved.lon, saved.zoom);
   }
 
   private addDynamicPanel(key: string, panel: Panel): void {

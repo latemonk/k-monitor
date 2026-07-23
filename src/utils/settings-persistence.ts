@@ -30,6 +30,8 @@ const SETTINGS_KEY_PREFIXES: readonly string[] = [
   'map-pinned',
   'mobile-map-collapsed',
   'positive-threshold',
+  // KCG fork: 관심 목록·지도 뷰·AI 감시 설정 등 kcg-* 로컬 상태 일괄 포함
+  'kcg-',
 ];
 
 function isSettingsKey(key: string): boolean {

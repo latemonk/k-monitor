@@ -92,6 +92,8 @@ export const KCG_WATCH_PRESETS: readonly KcgWatchPreset[] = [
       'map',
       'kcg-breaking',
       'kcg-aircraft',
+      'kcg-airwx',
+      'kcg-alerts',
       'airline-intel',
       'insights',
       'live-news',

@@ -12,6 +12,20 @@ var SYSTEM_PROMPT = `\uB2F9\uC2E0\uC740 \uD574\uC5ED \uAD00\uC81C \uC0C1\uD669\u
 
 \uCD9C\uB825 JSON \uC2A4\uD0A4\uB9C8:
 {"triggered": boolean, "anomaly_score": 0~100 \uC815\uC218, "severity": "info"|"watch"|"warning"|"critical", "confidence": "low"|"medium"|"high", "headline": "\uD55C \uC904 \uC694\uC57D(50\uC790 \uC774\uB0B4)", "changes": ["\uBCC0\uD654\xB7\uADFC\uAC70 \uD56D\uBAA9", ...], "caveats": "\uD310\uB2E8\uC758 \uD55C\uACC4\xB7\uC720\uC758\uC810"}`;
+// KCG fork(07-24 사장님 지시): 공중 감시 프리셋용 항공 도메인 프롬프트.
+var AVIATION_SYSTEM_PROMPT = `당신은 공역 관제 상황실의 항공기 활동 판독 분석관이다. 한반도 권역의 현재 항공기 활동 요약과 직전 요약(베이스라인), 그리고 관제 근무자가 입력한 "평소 기준"과 "경보 기준"을 받는다. 현재 활동이 평소 기준에서 유의미하게 벗어났는지, 경보 기준에 해당하는 활동이 있는지 판단하라.
+
+★★ 오탐 방지(매우 중요): 아래는 정상적·반복적 현상이며 이상 활동이 아니다. 이런 것만 보이면 anomaly_score를 낮게(0~15) 주고 triggered=false로 하라:
+ ① 시간대(심야 편수 감소, 아침·저녁 러시) 에 따른 항공기 수 증감
+ ② 민항 정기편의 순항·접근·이륙 패턴과 공항 주변 저고도 통과
+ ③ 접근·착륙 단계의 정상 강하(활주로 방향 정렬 포함)
+ ④ 소수 기체(1~2대)의 일시적 콜사인 미송출(수신 공백·전파 음영)
+ ⑤ 집계 시차로 인한 소폭(±20% 이내)의 대수 변동
+이상 활동으로 판단하려면 다음 같은 뚜렷한 신호가 필요하다: 비상 스쿼크(7500·7600·7700) 송출, 다수 항공기의 동시 신호 소실, 콜사인 없는 기체의 저고도 체공·선회, 공항 접근 경로와 무관한 저고도 고속 비행, 경보 기준에 명시된 조건의 충족, 평소 대비 특정 구역 활동의 급격한 변화. 애매하면 정상으로 보수적으로 판단하고 점수를 낮춰라. 보이는 수치만 근거로 하고 추측하지 마라. 반드시 JSON만 출력하라. 모든 문자열 값은 한국어로 쓴다.
+
+출력 JSON 스키마:
+{"triggered": boolean, "anomaly_score": 0~100 정수, "severity": "info"|"watch"|"warning"|"critical", "confidence": "low"|"medium"|"high", "headline": "한 줄 요약(50자 이내)", "changes": ["변화·근거 항목", ...], "caveats": "판단의 한계·유의점"}`;
+
 function json(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -64,6 +78,7 @@ async function handler(req) {
   const trigger = clampStr(body.trigger, 2e3);
   const current = clampStr(body.current, 8e3);
   const previous = clampStr(body.previous, 8e3);
+  const systemPrompt = body.domain === "aviation" ? AVIATION_SYSTEM_PROMPT : SYSTEM_PROMPT;
   if (!current) return json(400, { error: "current summary required" });
   const userPrompt = [
     "[\uAD00\uC81C \uADFC\uBB34\uC790\uAC00 \uC785\uB825\uD55C \uD3C9\uC18C \uAE30\uC900]",
@@ -94,7 +109,7 @@ async function handler(req) {
         body: JSON.stringify({
           model: p.model,
           messages: [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt }
           ],
           temperature: 0.2,
@@ -115,7 +130,7 @@ async function handler(req) {
             body: JSON.stringify({
               model: p.model,
               messages: [
-                { role: "system", content: SYSTEM_PROMPT },
+                { role: "system", content: systemPrompt },
                 { role: "user", content: userPrompt }
               ],
               temperature: 0.2,

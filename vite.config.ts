@@ -107,7 +107,7 @@ const PANEL_CLUSTER: Record<string, PanelChunkName> = {
   OilInventories: 'panels-energy', PipelineStatus: 'panels-energy',
   StorageFacilityMap: 'panels-energy', RenewableEnergy: 'panels-energy',
   // Defense / military / aviation
-  KcgAlerts: 'panels-defense', KcgVessels: 'panels-defense', KcgAircraft: 'panels-defense', KcgSea: 'panels-defense',
+  KcgAlerts: 'panels-defense', KcgVessels: 'panels-defense', KcgAircraft: 'panels-defense', KcgSea: 'panels-defense', KcgAirWeather: 'panels-defense',
   KcgBreaking: 'panels-news',
   AirlineIntel: 'panels-defense', DefensePatents: 'panels-defense',
   OrefSirens: 'panels-defense', StrategicPosture: 'panels-defense',

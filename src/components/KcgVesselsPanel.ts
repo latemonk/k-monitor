@@ -20,6 +20,7 @@ import { showToast } from '@/utils/toast';
 import { getRpcBaseUrl } from '@/services/rpc-client';
 import { MaritimeServiceClient } from '@/services/generated-rpc-clients';
 import { getKcgWatchlist, type WatchStatus } from '@/services/kcg-watchlist';
+import { KCG_WATCH_ADDED_EVENT, type KcgWatchAddedDetail, flyWatchChip, pulseWatchRow } from '@/utils/kcg-watch-guide';
 import type { ChokepointTankers } from '@/services/live-tankers';
 import type { VesselRegistryEntry, PortEvent } from '@/generated/client/worldmonitor/maritime/v1/service_client';
 
@@ -88,11 +89,31 @@ export class KcgVesselsPanel extends Panel {
     this.unsubWatch = watch.subscribe(() => {
       if (this.activeTab === 'watch') this.render();
     });
+    // KCG fork(07-24 사장님 지시): 지도(우클릭·카드)에서 관심 등록하면 이
+    // 패널의 관심 탭으로 칩이 날아와 "어디에 등록됐는지"를 보여준다.
+    window.addEventListener(KCG_WATCH_ADDED_EVENT, this.watchAddedListener);
   }
+
+  /** 지도 쪽 관심 등록 → 관심 탭 전환 + 칩 비행 + 새 행 펄스. */
+  private watchAddedListener = (e: Event): void => {
+    const detail = (e as CustomEvent<KcgWatchAddedDetail>).detail;
+    if (!detail || detail.handled) return;
+    // 패널이 화면에 없으면(다른 감시 탭 프리셋 등) 폴백 토스트에 맡긴다.
+    if (!this.element.isConnected || this.element.offsetParent === null) return;
+    detail.handled = true;
+    this.activeTab = 'watch';
+    this.render();
+    this.element.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const row = this.content.querySelector(`[data-watch-row="${detail.kind}:${detail.id}"]`) as HTMLElement | null;
+    flyWatchChip(detail.fromX, detail.fromY, row ?? this.element, detail.kind, () => {
+      if (row) pulseWatchRow(row);
+    });
+  };
 
   public destroy(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.unsubWatch) { this.unsubWatch(); this.unsubWatch = null; }
+    window.removeEventListener(KCG_WATCH_ADDED_EVENT, this.watchAddedListener);
     super.destroy();
   }
 
@@ -464,7 +485,7 @@ export class KcgVesselsPanel extends Panel {
         : safeHtml`<span class="kcgv-badge kcgv-badge-ok">정상</span>`;
       const idLabel = s.item.kind === 'vessel' ? `MMSI ${s.item.id}` : (s.item.byCallsign ? `콜사인 ${s.item.id.toUpperCase()}` : `HEX ${s.item.id.toUpperCase()}`);
       return safeHtml`
-        <div class="kcgv-item">
+        <div class="kcgv-item" data-watch-row="${s.item.kind}:${s.item.id}">
           <div class="kcgv-item-head">
             <span class="kcgv-item-name">${s.item.kind === 'vessel' ? '🚢' : '✈️'} ${s.item.label || s.item.id}${badge}</span>
             <span class="kcgv-item-actions">

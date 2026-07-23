@@ -1,11 +1,15 @@
 /**
- * KCG fork — AI 이상 선박 활동 감시 엔진.
+ * KCG fork — AI 이상 활동 감시 엔진 (해상/공역 2도메인).
  *
- * geosis의 감시구역(Watch) 패턴을 선박 활동에 이식한 것:
+ * geosis의 감시구역(Watch) 패턴을 이식한 것:
  *   - 베이스라인 = 직전 집계 요약(과거 산출물) + 사용자가 입력한 "평소 기준" 텍스트
  *   - 판정 = LLM이 스키마 강제 출력({triggered, anomaly_score, severity, ...})으로
  *     현재 활동을 베이스라인과 비교 (서버 프록시 /api/kcg-anomaly)
  *   - 경보 = triggered && score >= 사용자 임계값, 60분 dedup 쿨다운
+ *
+ * 도메인(07-24 사장님 지시): 해양 감시 프리셋에서는 선박(maritime),
+ * 공중 감시 프리셋에서는 항공기(aviation)를 감시한다. 도메인별로 설정·
+ * 경보·직전 요약이 따로 저장되고, 엔진 인스턴스도 도메인별 싱글턴이다.
  *
  * 판정 주기·평소 기준·경보 기준·임계값은 전부 사용자가 패널에서 설정한다.
  * 엔진은 브라우저(상황실 화면)가 떠 있는 동안 동작한다.
@@ -13,11 +17,14 @@
 
 import { fetchLiveTankers } from '@/services/live-tankers';
 import { fetchSeaConditions, summarizeSeaConditions } from '@/services/kcg-sea';
+import { fetchAircraftPositions } from '@/services/aviation';
 import { KOREA_ZONES } from '@/config/korea-zones';
 import { flagFromMmsi, shipTypeKo } from '@/utils/mmsi-flag';
 import { toApiUrl } from '@/services/runtime';
 import { getRpcBaseUrl } from '@/services/rpc-client';
 import { MaritimeServiceClient } from '@/services/generated-rpc-clients';
+
+export type KcgAlertDomain = 'maritime' | 'aviation';
 
 export interface KcgAlertSettings {
   enabled: boolean;
@@ -62,11 +69,14 @@ export interface KcgEngineState {
   liveAis: boolean | null;
 }
 
-const SETTINGS_KEY = 'kcg-alert-settings-v1';
-const ALERTS_KEY = 'kcg-alerts-v1';
-const PREV_SUMMARY_KEY = 'kcg-prev-summary-v1';
 const DEDUP_COOLDOWN_MS = 60 * 60 * 1000;
 const MAX_ALERTS = 50;
+
+// maritime 은 레거시 키를 그대로 써서 기존 사용자의 설정·경보를 보존한다.
+const DOMAIN_KEYS: Record<KcgAlertDomain, { settings: string; alerts: string; prevSummary: string }> = {
+  maritime: { settings: 'kcg-alert-settings-v1', alerts: 'kcg-alerts-v1', prevSummary: 'kcg-prev-summary-v1' },
+  aviation: { settings: 'kcg-alert-settings-av-v1', alerts: 'kcg-alerts-av-v1', prevSummary: 'kcg-prev-summary-av-v1' },
+};
 
 export const DEFAULT_SETTINGS: KcgAlertSettings = {
   enabled: true,
@@ -82,6 +92,23 @@ export const DEFAULT_SETTINGS: KcgAlertSettings = {
   browserNotify: true,
 };
 
+export const DEFAULT_AVIATION_SETTINGS: KcgAlertSettings = {
+  enabled: true,
+  baseline:
+    '한반도 권역에는 평시 순항 고도의 민항 정기편이 대부분이고, 비상 스쿼크를 송출하는 항공기는 없어요. '
+    + '심야에는 편수가 크게 줄어요.',
+  trigger:
+    '비상 스쿼크(7500·7600·7700) 송출, 다수 항공기의 동시 신호 소실, '
+    + '콜사인 없는 항공기의 저고도 체공·선회, 공항 접근 경로 밖 저고도 고속 비행, '
+    + '평소 대비 특정 구역 항공기 수의 급격한 변화.',
+  threshold: 55,
+  intervalMin: 10,
+  browserNotify: true,
+};
+
+// 항공 요약용 권역 bbox — KcgAircraftPanel 과 동일(제주~휴전선, 서해~동해).
+const AV_KOREA_BBOX = { swLat: 33.0, swLon: 124.0, neLat: 39.2, neLon: 131.5 };
+
 type Listener = () => void;
 
 class KcgAlertEngine {
@@ -91,8 +118,10 @@ class KcgAlertEngine {
   private listeners = new Set<Listener>();
   private inFlight = false;
   private dedup = new Map<string, number>();
+  private readonly keys: { settings: string; alerts: string; prevSummary: string };
 
-  constructor() {
+  constructor(readonly domain: KcgAlertDomain) {
+    this.keys = DOMAIN_KEYS[domain];
     this.settings = this.loadSettings();
     this.state = {
       running: false,
@@ -109,6 +138,11 @@ class KcgAlertEngine {
 
   /** 데이터 출처 확인: 릴레이가 실시간 AIS에 연결돼 있는지(연결 안 됨 = 시뮬레이션 피드). */
   private async probeDataSource(): Promise<void> {
+    if (this.domain === 'aviation') {
+      // 항공은 커뮤니티 ADS-B(무키) 실데이터만 쓴다 — 시뮬레이션 경로가 없다.
+      this.state.liveAis = true;
+      return;
+    }
     try {
       const client = new MaritimeServiceClient(getRpcBaseUrl(), {
         fetch: (...args: Parameters<typeof fetch>) => globalThis.fetch(...args),
@@ -135,22 +169,26 @@ class KcgAlertEngine {
       threshold: Math.max(0, Math.min(100, Math.round(next.threshold) || 55)),
       intervalMin: Math.max(3, Math.min(120, Math.round(next.intervalMin) || 10)),
     };
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch { /* quota */ }
+    try { localStorage.setItem(this.keys.settings, JSON.stringify(this.settings)); } catch { /* quota */ }
     this.restart();
     this.emit();
   }
 
+  private defaults(): KcgAlertSettings {
+    return this.domain === 'aviation' ? DEFAULT_AVIATION_SETTINGS : DEFAULT_SETTINGS;
+  }
+
   private loadSettings(): KcgAlertSettings {
     try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      const raw = localStorage.getItem(this.keys.settings);
+      if (raw) return { ...this.defaults(), ...JSON.parse(raw) };
     } catch { /* corrupted -> defaults */ }
-    return { ...DEFAULT_SETTINGS };
+    return { ...this.defaults() };
   }
 
   private loadAlerts(): KcgAlert[] {
     try {
-      const raw = localStorage.getItem(ALERTS_KEY);
+      const raw = localStorage.getItem(this.keys.alerts);
       if (raw) {
         const arr = JSON.parse(raw);
         if (Array.isArray(arr)) return arr.slice(0, MAX_ALERTS);
@@ -160,7 +198,7 @@ class KcgAlertEngine {
   }
 
   private persistAlerts(): void {
-    try { localStorage.setItem(ALERTS_KEY, JSON.stringify(this.state.alerts.slice(0, MAX_ALERTS))); } catch { /* quota */ }
+    try { localStorage.setItem(this.keys.alerts, JSON.stringify(this.state.alerts.slice(0, MAX_ALERTS))); } catch { /* quota */ }
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────
@@ -223,19 +261,20 @@ class KcgAlertEngine {
     this.inFlight = true;
     try {
       void this.probeDataSource();
-      const summary = await this.buildSummary();
+      const summary = this.domain === 'aviation' ? await this.buildAviationSummary() : await this.buildSummary();
       if (!summary) {
-        this.state.lastError = '선박 데이터를 가져오지 못했어요';
+        this.state.lastError = this.domain === 'aviation' ? '항공기 데이터를 가져오지 못했어요' : '선박 데이터를 가져오지 못했어요';
         this.state.lastRunAt = Date.now();
         return;
       }
       let previous: string | null = null;
-      try { previous = localStorage.getItem(PREV_SUMMARY_KEY); } catch { /* ignore */ }
+      try { previous = localStorage.getItem(this.keys.prevSummary); } catch { /* ignore */ }
 
       const resp = await fetch(toApiUrl('/api/kcg-anomaly'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          domain: this.domain,
           baseline: this.settings.baseline,
           trigger: this.settings.trigger,
           current: summary,
@@ -245,7 +284,7 @@ class KcgAlertEngine {
       });
       this.state.lastRunAt = Date.now();
       this.state.lastSummary = summary;
-      try { localStorage.setItem(PREV_SUMMARY_KEY, summary); } catch { /* quota */ }
+      try { localStorage.setItem(this.keys.prevSummary, summary); } catch { /* quota */ }
 
       if (!resp.ok) {
         this.state.lastError = resp.status === 503
@@ -287,7 +326,7 @@ class KcgAlertEngine {
     if (this.settings.browserNotify && typeof Notification !== 'undefined') {
       if (Notification.permission === 'granted') {
         try {
-          new Notification(`[해상 이상 활동 ${verdict.anomaly_score}점] ${verdict.headline}`, {
+          new Notification(`[${this.domain === 'aviation' ? '공역' : '해상'} 이상 활동 ${verdict.anomaly_score}점] ${verdict.headline}`, {
             body: verdict.changes.slice(0, 3).join('\n'),
             tag: alert.id,
           });
@@ -361,11 +400,64 @@ class KcgAlertEngine {
 
     return [`[집계 시각(KST)] ${kst}`, `[전체 포착 선박] ${total}척`, ...lines].join('\n') + seaSection;
   }
+
+  /**
+   * KCG fork(07-24 사장님 지시) — 공중 감시용 요약.
+   * 한반도 권역 항공기 현황을 LLM이 소화할 수 있는 압축 텍스트로:
+   * 총수·공중/지상·고도대 분포·비상 스쿼크·콜사인 없는 기체·급강하 목록.
+   */
+  private async buildAviationSummary(): Promise<string | null> {
+    let positions;
+    try {
+      positions = await fetchAircraftPositions(AV_KOREA_BBOX);
+    } catch {
+      return null;
+    }
+    if (!positions || positions.length === 0) return null;
+
+    const kst = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+    const airborne = positions.filter((p) => !p.onGround);
+    const ground = positions.length - airborne.length;
+    this.state.vesselCount = positions.length;
+
+    const bands = { cruise: 0, mid: 0, low: 0, approach: 0 };
+    for (const p of airborne) {
+      const ft = p.altitudeFt ?? 0;
+      if (ft >= 30000) bands.cruise++;
+      else if (ft >= 18000) bands.mid++;
+      else if (ft >= 5000) bands.low++;
+      else bands.approach++;
+    }
+
+    const describe = (p: (typeof positions)[number]): string => {
+      const cs = (p.callsign || '').trim() || '콜사인없음';
+      return `${cs}(${p.icao24}/${Math.round(p.altitudeFt ?? 0).toLocaleString()}ft/${Math.round(p.groundSpeedKts ?? 0)}kt @${p.lat.toFixed(2)},${p.lon.toFixed(2)})`;
+    };
+    const emergencies = positions.filter((p) => ['7500', '7600', '7700'].includes(p.squawk));
+    const noCallsign = airborne.filter((p) => !(p.callsign || '').trim());
+    const rapidDescent = airborne.filter((p) => (p.verticalRateMps ?? 0) <= -15 && (p.altitudeFt ?? 0) > 3000);
+    const lowFast = airborne.filter((p) => (p.altitudeFt ?? 0) < 3000 && (p.groundSpeedKts ?? 0) >= 250);
+
+    const lines = [
+      `[집계 시각(KST)] ${kst}`,
+      `[전체 포착 항공기] ${positions.length}대 (공중 ${airborne.length} · 지상 ${ground})`,
+      `■ 고도 분포(공중): 순항 30,000ft+ ${bands.cruise}대 | 중고도 18,000ft+ ${bands.mid}대 | 저고도 5,000ft+ ${bands.low}대 | 접근/이륙 5,000ft 미만 ${bands.approach}대`,
+      `■ 비상 스쿼크(7500/7600/7700): ${emergencies.length ? emergencies.map((p) => `${describe(p)} 스쿼크 ${p.squawk}`).join(' / ') : '없음'}`,
+      `■ 콜사인 미송출(공중): ${noCallsign.length}대${noCallsign.length ? ` — ${noCallsign.slice(0, 5).map(describe).join(' / ')}` : ''}`,
+      `■ 급강하(-15m/s 이상, 3,000ft 초과): ${rapidDescent.length ? rapidDescent.slice(0, 5).map(describe).join(' / ') : '없음'}`,
+      `■ 저고도 고속(3,000ft 미만·250kt 이상): ${lowFast.length ? lowFast.slice(0, 5).map(describe).join(' / ') : '없음'}`,
+    ];
+    return lines.join('\n');
+  }
 }
 
-let engine: KcgAlertEngine | null = null;
+const engines = new Map<KcgAlertDomain, KcgAlertEngine>();
 
-export function getKcgAlertEngine(): KcgAlertEngine {
-  if (!engine) engine = new KcgAlertEngine();
+export function getKcgAlertEngine(domain: KcgAlertDomain = 'maritime'): KcgAlertEngine {
+  let engine = engines.get(domain);
+  if (!engine) {
+    engine = new KcgAlertEngine(domain);
+    engines.set(domain, engine);
+  }
   return engine;
 }

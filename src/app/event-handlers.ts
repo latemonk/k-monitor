@@ -34,6 +34,7 @@ import {
   showToast,
 } from '@/utils';
 import { clearPanelColSpans, clearPanelSpans } from '@/utils/panel-storage';
+import { saveKcgMapView } from '@/utils/kcg-map-view';
 import {
   IDLE_PAUSE_MS,
   DEFAULT_MAP_LAYERS,
@@ -1245,6 +1246,11 @@ export class EventHandlerManager implements AppModule {
         if (regionSelect.value !== state.view) {
           regionSelect.value = state.view;
         }
+      }
+      // KCG fork(07-24 사장님 지시): 지도 위치/줌을 저장해 다음 방문 때 복원.
+      if (this.ctx.map) {
+        const center = this.ctx.map.getCenter();
+        if (center) saveKcgMapView({ lat: center.lat, lon: center.lon, zoom: this.ctx.map.getState().zoom });
       }
       this.debouncedWebcamReload();
     });

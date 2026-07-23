@@ -58,6 +58,10 @@ import { ArcLayer } from '@deck.gl/layers';
 import type { WeatherAlert } from '@/services/weather';
 import { escapeHtml } from '@/utils/sanitize';
 import { flagFromMmsi, flagEmoji, shipTypeKo, shipTypeColor } from '@/utils/mmsi-flag';
+import { showMapContextMenu } from './MapContextMenu';
+import { getKcgWatchlist } from '@/services/kcg-watchlist';
+import { announceWatchAdded } from '@/utils/kcg-watch-guide';
+import { showToast } from '@/utils/toast';
 import { toApiUrl } from '@/services/runtime';
 import {
   derivePipelinePublicBadge,
@@ -204,6 +208,19 @@ interface DeckMapState {
 
 interface DeckGLMapOptions {
   chrome?: boolean;
+}
+
+/** KCG fork — live-tankers 레이어의 선박 datum(카드·우클릭 메뉴 공용). */
+interface KcgVesselDatum {
+  mmsi: string;
+  lat: number;
+  lon: number;
+  speed: number;
+  shipType: number;
+  name: string;
+  heading: number;
+  course: number;
+  timestamp: number;
 }
 
 interface HotspotWithBreaking extends Hotspot {
@@ -715,10 +732,13 @@ export class DeckGLMap {
   }
   private readonly handleContextMenu = (e: MouseEvent): void => {
     e.preventDefault();
-    if (!this.onMapContextMenu || !this.maplibreMap) return;
+    if (!this.maplibreMap) return;
     const rect = this.container.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    // KCG fork(07-24 사장님 지시): 선박/항공기 위 우클릭 = 관심 등록 메뉴.
+    if (this.showKcgAssetContextMenu(x, y, e.clientX, e.clientY)) return;
+    if (!this.onMapContextMenu) return;
     const lngLat = this.maplibreMap.unproject([x, y]);
     if (!Number.isFinite(lngLat.lng)) return;
     const country = resolveCountryForPointerInteraction(
@@ -735,6 +755,119 @@ export class DeckGLMap {
       countryName: country?.name,
     });
   };
+
+  // ── KCG fork(07-24 사장님 지시): 우클릭 관심 등록 ────────────────────────
+  /** 우클릭 지점의 선박/항공기를 픽킹해 관심 등록/해제 메뉴를 띄운다. 띄웠으면 true. */
+  private showKcgAssetContextMenu(x: number, y: number, screenX: number, screenY: number): boolean {
+    let info: PickingInfo | null = null;
+    try {
+      info = this.deckOverlay?.pickObject({ x, y, radius: 10 }) ?? null;
+    } catch { return false; }
+    if (!info?.object || !info.layer) return false;
+    const rawId = info.layer.id;
+    const layerId = rawId.endsWith('-ghost') ? rawId.slice(0, -6) : rawId;
+    const watch = getKcgWatchlist();
+
+    if (layerId === 'aircraft-positions-layer') {
+      const d = info.object as PositionSample;
+      const icao = (d.icao24 || '').toLowerCase();
+      if (!/^[0-9a-f]{6}$/.test(icao)) return false;
+      const label = (d.callsign || '').trim() || icao.toUpperCase();
+      showMapContextMenu(screenX, screenY, [
+        watch.isWatched('aircraft', icao)
+          ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('aircraft', icao, label) }
+          : { label: `☆ 관심 항공기 등록 — ${label}`, action: () => this.addAircraftToKcgWatch(d, screenX, screenY) },
+        { label: '실시간 추적 카드 열기', action: () => this.selectAircraft(d) },
+      ]);
+      return true;
+    }
+
+    if (layerId === 'live-tankers-layer') {
+      const d = info.object as KcgVesselDatum;
+      const mmsi = String(d.mmsi || '');
+      if (!mmsi) return false;
+      const label = d.name || `MMSI ${mmsi}`;
+      showMapContextMenu(screenX, screenY, [
+        watch.isWatched('vessel', mmsi)
+          ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('vessel', mmsi, label) }
+          : { label: `☆ 관심 선박 등록 — ${label}`, action: () => this.addVesselToKcgWatch(d, screenX, screenY) },
+        { label: '선박 정보 카드 열기', action: () => this.selectVessel(d) },
+      ]);
+      return true;
+    }
+    return false;
+  }
+
+  private addAircraftToKcgWatch(d: PositionSample, fromX: number, fromY: number): void {
+    const icao = (d.icao24 || '').toLowerCase();
+    const label = (d.callsign || '').trim() || icao.toUpperCase();
+    const watch = getKcgWatchlist();
+    if (!watch.add({ kind: 'aircraft', id: icao, byCallsign: false, label: (d.callsign || '').trim() })) {
+      showToast('이미 관심 등록되어 있거나 한도(10대)를 넘었어요');
+      return;
+    }
+    watch.requestNotifyPermission();
+    announceWatchAdded({ kind: 'aircraft', id: icao, label, fromX, fromY });
+    this.refreshKcgWatchButtons();
+  }
+
+  private addVesselToKcgWatch(d: KcgVesselDatum, fromX: number, fromY: number): void {
+    const mmsi = String(d.mmsi || '');
+    const label = d.name || `MMSI ${mmsi}`;
+    const watch = getKcgWatchlist();
+    if (!watch.add({ kind: 'vessel', id: mmsi, label: d.name || '' })) {
+      showToast('이미 관심 등록되어 있거나 한도(10척)를 넘었어요');
+      return;
+    }
+    watch.requestNotifyPermission();
+    announceWatchAdded({ kind: 'vessel', id: mmsi, label, fromX, fromY });
+    this.refreshKcgWatchButtons();
+  }
+
+  private removeFromKcgWatch(kind: 'vessel' | 'aircraft', id: string, label: string): void {
+    getKcgWatchlist().remove(kind, id);
+    showToast(`${label} — 관심 등록을 해제했어요`);
+    this.refreshKcgWatchButtons();
+  }
+
+  /** 플로팅 카드의 관심 토글 버튼. 등록 시 버튼 위치에서 안내 칩이 날아간다. */
+  private kcgWatchButton(kind: 'vessel' | 'aircraft', id: string, label: string, add: (fromX: number, fromY: number) => void): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.dataset.kcgWatch = `${kind}:${id}`;
+    btn.style.cssText = [
+      'background:rgba(0,209,255,0.08)', 'border:1px solid rgba(0,209,255,0.35)',
+      'color:#7fd4ff', 'font-size:10px', 'border-radius:4px', 'cursor:pointer',
+      'padding:2px 7px', 'margin-left:8px', 'flex-shrink:0', 'line-height:1.5', 'white-space:nowrap',
+    ].join(';');
+    btn.addEventListener('click', () => {
+      const watch = getKcgWatchlist();
+      if (watch.isWatched(kind, id)) {
+        this.removeFromKcgWatch(kind, id, label);
+      } else {
+        const r = btn.getBoundingClientRect();
+        add(r.left + r.width / 2, r.top + r.height / 2);
+      }
+    });
+    this.syncKcgWatchButton(btn);
+    return btn;
+  }
+
+  private syncKcgWatchButton(btn: HTMLButtonElement): void {
+    const [kind, ...rest] = (btn.dataset.kcgWatch || '').split(':');
+    if (kind !== 'vessel' && kind !== 'aircraft') return;
+    const watched = getKcgWatchlist().isWatched(kind, rest.join(':'));
+    btn.textContent = watched ? '★ 관심 해제' : '☆ 관심 등록';
+    btn.title = watched
+      ? '관심 목록에서 빼요'
+      : (kind === 'vessel'
+        ? '관심 선박으로 등록하면 신호 소실·급변침 같은 이상 징후를 알려드려요'
+        : '관심 항공기로 등록하면 비상 스쿼크·신호 소실 같은 이상 징후를 알려드려요');
+  }
+
+  /** 카드가 떠 있는 동안 우클릭 메뉴 쪽에서 상태가 바뀌어도 버튼 표기를 맞춘다. */
+  private refreshKcgWatchButtons(): void {
+    document.querySelectorAll<HTMLButtonElement>('button[data-kcg-watch]').forEach((btn) => this.syncKcgWatchButton(btn));
+  }
   private onLayerChange?: (layer: keyof MapLayers, enabled: boolean, source: 'user' | 'programmatic') => void;
   private onStateChange?: (state: DeckMapState) => void;
   private onAircraftPositionsUpdate?: (positions: PositionSample[]) => void;
@@ -847,6 +980,7 @@ export class DeckGLMap {
   private kcgAircraftCard: HTMLDivElement | null = null;
   private kcgAircraftCardFields: Map<string, HTMLElement> = new Map();
   private kcgAircraftCardReposition: (() => void) | null = null;
+  private unsubKcgWatch: (() => void) | null = null;
 
   /** 공역 항공기 현황 패널 → 항공기 선택(궤적+상세 카드). */
   private kcgSelectAircraftListener = (e: Event): void => {
@@ -1050,7 +1184,16 @@ export class DeckGLMap {
     close.setAttribute('aria-label', '추적 종료');
     close.style.cssText = 'background:none;border:none;color:#8aa0b4;font-size:16px;cursor:pointer;padding:0 0 0 8px;line-height:1;';
     close.addEventListener('click', () => this.deselectAircraft());
-    head.append(title, close);
+    // KCG fork(07-24 사장님 지시): 카드에서 바로 관심 등록/해제.
+    const headRight = document.createElement('div');
+    headRight.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+    const icaoForWatch = (d.icao24 || '').toLowerCase();
+    const watchLabel = (d.callsign || '').trim() || icaoForWatch.toUpperCase();
+    headRight.append(
+      this.kcgWatchButton('aircraft', icaoForWatch, watchLabel, (fx, fy) => this.addAircraftToKcgWatch(d, fx, fy)),
+      close,
+    );
+    head.append(title, headRight);
     card.append(head);
 
     const sub = document.createElement('div');
@@ -1263,7 +1406,16 @@ export class DeckGLMap {
       <div style="display:flex;justify-content:space-between;line-height:1.8"><span style="color:#7f95a8">마지막 수신</span><span>${seen}</span></div>
       <div style="margin-top:6px;font-size:11px;color:#5fbf7f">지도에서 하이라이트 중</div>
     `, 'KCG vessel card — values escaped'));
-    (card.querySelector('.kcg-vessel-card-close') as HTMLElement | null)?.addEventListener('click', () => this.deselectVessel());
+    const vesselClose = card.querySelector('.kcg-vessel-card-close') as HTMLElement | null;
+    vesselClose?.addEventListener('click', () => this.deselectVessel());
+    // KCG fork(07-24 사장님 지시): 카드에서 바로 관심 등록/해제.
+    if (vesselClose) {
+      const watchMmsi = String(d.mmsi || '');
+      vesselClose.parentElement?.insertBefore(
+        this.kcgWatchButton('vessel', watchMmsi, d.name || `MMSI ${watchMmsi}`, (fx, fy) => this.addVesselToKcgWatch(d, fx, fy)),
+        vesselClose,
+      );
+    }
     document.body.append(card);
     this.kcgVesselCard = card;
     this.positionKcgVesselCard();
@@ -1675,6 +1827,8 @@ export class DeckGLMap {
     window.addEventListener('kcg:highlight-aircraft', this.kcgHighlightListener);
     window.addEventListener('kcg:select-aircraft', this.kcgSelectAircraftListener);
     window.addEventListener('kcg:highlight-vessel', this.kcgHighlightVesselListener);
+    // 패널 쪽에서 관심 등록/해제해도 떠 있는 카드의 버튼 표기를 맞춘다.
+    this.unsubKcgWatch = getKcgWatchlist().subscribe(() => this.refreshKcgWatchButtons());
 
     let tileLoadOk = false;
     let tileErrorCount = 0;
@@ -8493,6 +8647,8 @@ export class DeckGLMap {
     window.removeEventListener('kcg:highlight-aircraft', this.kcgHighlightListener);
     window.removeEventListener('kcg:select-aircraft', this.kcgSelectAircraftListener);
     window.removeEventListener('kcg:highlight-vessel', this.kcgHighlightVesselListener);
+    this.unsubKcgWatch?.();
+    this.unsubKcgWatch = null;
     this.stopTradeAnimation();
     this.activeFlightTrails.clear();
     this.clearTrailsBtn = null;

@@ -10,6 +10,8 @@ import { Panel } from './Panel';
 import { safeHtml, joinSafeHtml, type SafeHtml } from '@/utils/sanitize';
 import { fetchAircraftPositions, type PositionSample } from '@/services/aviation';
 import { showToast } from '@/utils/toast';
+import { getKcgWatchlist } from '@/services/kcg-watchlist';
+import { KCG_WATCH_ADDED_EVENT, type KcgWatchAddedDetail, flyWatchChip, pulseWatchRow } from '@/utils/kcg-watch-guide';
 
 // 한반도 권역 bbox (제주~휴전선, 서해~동해). track-aircraft 는 중심점+반경으로
 // 변환해 커뮤니티 ADS-B point 조회를 돈다.
@@ -33,20 +35,42 @@ export class KcgAircraftPanel extends Panel {
   private positions: PositionSample[] = [];
   private loaded = false;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private unsubWatch: (() => void) | null = null;
 
   constructor() {
     super({
       id: 'kcg-aircraft',
       title: '공역 항공기 현황',
-      infoTooltip: '한반도 권역 상공의 실시간 항공기예요. 편명을 누르면 지도가 해당 기체로 이동하고 궤적이 그려져요. 10초마다 갱신되고, 커뮤니티 ADS-B(adsb.lol) 무료 데이터를 써요.',
+      infoTooltip: '한반도 권역 상공의 실시간 항공기예요. 편명을 누르면 지도가 해당 기체로 이동하고 궤적이 그려져요. 10초마다 갱신되고, 커뮤니티 ADS-B(adsb.lol) 무료 데이터를 써요. 우클릭이나 추적 카드에서 관심 등록한 항공기는 맨 위 관심 추적 줄에 모여요.',
     });
     void this.fetchData();
     this.timer = setInterval(() => void this.fetchData(), REFRESH_MS);
     this.element.addEventListener('wm:panel-maximize', () => this.render());
+    // KCG fork(07-24 사장님 지시): 관심 항공기 섹션 + 등록 안내 인터랙션.
+    const watch = getKcgWatchlist();
+    watch.start();
+    this.unsubWatch = watch.subscribe(() => this.render());
+    window.addEventListener(KCG_WATCH_ADDED_EVENT, this.watchAddedListener);
   }
+
+  /** 지도 쪽 관심 등록(항공기) → 이 패널 관심 섹션으로 칩 비행 + 행 펄스. */
+  private watchAddedListener = (e: Event): void => {
+    const detail = (e as CustomEvent<KcgWatchAddedDetail>).detail;
+    if (!detail || detail.handled || detail.kind !== 'aircraft') return;
+    if (!this.element.isConnected || this.element.offsetParent === null) return;
+    detail.handled = true;
+    this.render();
+    this.element.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const row = this.content.querySelector(`[data-watch-row="aircraft:${detail.id}"]`) as HTMLElement | null;
+    flyWatchChip(detail.fromX, detail.fromY, row ?? this.element, 'aircraft', () => {
+      if (row) pulseWatchRow(row);
+    });
+  };
 
   public destroy(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.unsubWatch) { this.unsubWatch(); this.unsubWatch = null; }
+    window.removeEventListener(KCG_WATCH_ADDED_EVENT, this.watchAddedListener);
     super.destroy();
   }
 
@@ -91,8 +115,37 @@ export class KcgAircraftPanel extends Panel {
     const stat = (label: string, value: number, cls = ''): SafeHtml => safeHtml`
       <div class="kca-stat ${cls}"><div class="kca-stat-v">${String(value)}</div><div class="kca-stat-l">${label}</div></div>`;
 
+    // KCG fork(07-24 사장님 지시): 관심 등록한 항공기는 패널 맨 위에 모아
+    // 이상 징후 배지와 함께 보여준다. 지도 우클릭·추적 카드 등록의 도착지.
+    const watch = getKcgWatchlist();
+    const watched = watch.getStatuses().filter((s) => s.item.kind === 'aircraft');
+    const agoText = (ts: number | null): string => {
+      if (!ts) return '신호 없음';
+      const m = Math.max(0, Math.floor((Date.now() - ts) / 60_000));
+      return m < 1 ? '방금' : m < 60 ? `${m}분 전` : `${Math.floor(m / 60)}시간 전`;
+    };
+    const watchSection: SafeHtml = watched.length
+      ? safeHtml`
+        <div class="kca-watch">
+          <div class="kca-watch-title">⭐ 관심 추적 (${String(watched.length)}/10)</div>
+          ${joinSafeHtml(watched.map((s) => safeHtml`
+            <div class="kca-watch-row" data-watch-row="aircraft:${s.item.id}">
+              <span class="kca-watch-name">${s.item.label || s.item.id.toUpperCase()}</span>
+              ${s.anomalies.length
+                ? safeHtml`<span class="kca-watch-badge kca-watch-badge-warn">${s.anomalies[0]!.headline}</span>`
+                : safeHtml`<span class="kca-watch-badge">정상</span>`}
+              <span class="kca-watch-meta">${agoText(s.lastSeenAt)}</span>
+              <span class="kca-watch-actions">
+                ${s.trail.length ? safeHtml`<button class="kca-watch-btn" data-watch-focus="${s.item.id}">지도</button>` : safeHtml``}
+                <button class="kca-watch-btn kca-watch-btn-danger" data-watch-remove="${s.item.id}">해제</button>
+              </span>
+            </div>`))}
+        </div>`
+      : safeHtml``;
+
     this.setSafeContent(safeHtml`
       <div class="kca-total">권역 <strong>${String(this.positions.length)}대</strong> 포착 · 5초 갱신 · 편명 클릭=지도 포커스</div>
+      ${watchSection}
       <div class="kca-stats">
         ${stat('공중', airborne.length)}
         ${stat('지상', ground.length)}
@@ -122,11 +175,35 @@ export class KcgAircraftPanel extends Panel {
         .kca-row-emerg td { background: rgba(255,80,80,0.12); }
         .kca-sq-emerg { color: #ff5050; font-weight: 700; }
         .kca-empty { color: var(--text-dim,#889); font-size: 12px; padding: 12px 4px; }
+        .kca-watch { background: rgba(0,209,255,0.05); border: 1px solid rgba(0,209,255,0.18); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+        .kca-watch-title { color: #7fd4ff; font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+        .kca-watch-row { display: flex; align-items: center; gap: 6px; padding: 3px 2px; font-size: 12px; }
+        .kca-watch-name { font-weight: 600; color: var(--text,#e8f2fa); }
+        .kca-watch-badge { background: rgba(95,191,127,0.15); color: #5fbf7f; border-radius: 4px; padding: 0 5px; font-size: 10px; }
+        .kca-watch-badge-warn { background: rgba(255,209,102,0.16); color: #ffd166; }
+        .kca-watch-meta { color: var(--text-dim,#8aa); font-size: 10px; margin-left: auto; }
+        .kca-watch-actions { display: flex; gap: 4px; }
+        .kca-watch-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: var(--text,#dde); border-radius: 4px; padding: 1px 7px; font-size: 10px; cursor: pointer; }
+        .kca-watch-btn:hover { background: rgba(255,255,255,0.12); }
+        .kca-watch-btn-danger { color: #ff8080; border-color: rgba(255,128,128,0.3); }
       </style>
     `, () => this.bindRows());
   }
 
   private bindRows(): void {
+    // 관심 추적 행 — Panel.setContentHtml 이 같은 HTML 이면 DOM 을 유지하고
+    // bind 만 재실행하므로 바인딩은 전부 on* 할당(addEventListener 금지).
+    this.content.querySelectorAll('[data-watch-focus]').forEach((el) => {
+      (el as HTMLElement).onclick = () => {
+        getKcgWatchlist().focusOnMap('aircraft', (el as HTMLElement).dataset.watchFocus || '');
+        showToast('지도를 해당 항공기 위치로 옮겼어요');
+      };
+    });
+    this.content.querySelectorAll('[data-watch-remove]').forEach((el) => {
+      (el as HTMLElement).onclick = () => {
+        getKcgWatchlist().remove('aircraft', (el as HTMLElement).dataset.watchRemove || '');
+      };
+    });
     this.content.querySelectorAll('tr[data-icao]').forEach((el) => {
       const focusCell = el.querySelector('.kca-td-focus') as HTMLElement | null;
       if (!focusCell) return;
