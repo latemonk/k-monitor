@@ -256,7 +256,11 @@ Rules:
           { role: 'user', content: userPromptParts.join('\n\n') },
         ],
         temperature: 0.4,
-        maxTokens: 1100,
+        // 1100 → 2600 (2026-07-23, KCG): thinking-budget models (gemini
+        // flash) burn most of a small max_tokens on hidden reasoning and
+        // return a mid-sentence truncated brief; Korean also spends more
+        // tokens per character than English.
+        maxTokens: 2600,
         timeoutMs: UPSTREAM_TIMEOUT_MS,
         systemAppend: frameworkRaw || undefined,
         stage: 'country-intel-brief',
