@@ -4,6 +4,7 @@
 
 🔗 **라이브 데모**: https://k-monitor.onpod.ai
 
+[![Live Demo](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EB%B8%8C%20%EB%8D%B0%EB%AA%A8-k--monitor.onpod.ai-brightgreen?style=flat&logo=googlechrome&logoColor=white)](https://k-monitor.onpod.ai)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
