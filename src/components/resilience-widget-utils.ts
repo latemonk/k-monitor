@@ -261,9 +261,38 @@ export interface ResilienceOverallDisplay {
   serverLevelLabel: string;
 }
 
-export function getResilienceOverallDisplay(data: Pick<ResilienceScoreResponse, 'overallScore' | 'level'>): ResilienceOverallDisplay {
+// KCG fork: 대체값(imputation) 비중이 이 값 이상이면 종합 점수를 숫자로
+// 보여주지 않는다. 셀프호스팅 첫 부팅처럼 시드가 비어 있으면 3축 공식의
+// min-pillar 페널티가 "데이터 없음 = 0점 축"을 만들어 실제와 무관한
+// 매우 낮은 점수(예: KR 19.68)를 뽑아내는데, 그 숫자를 등급 색까지 입혀
+// 내보내는 건 오정보다. 임계값 0.6 = lowConfidence 판정(0.4 초과)보다
+// 한참 위로, "점수의 과반이 추정치"인 경우만 가린다.
+export const RESILIENCE_PROVISIONAL_IMPUTATION_THRESHOLD = 0.6;
+
+export function isResilienceScoreProvisional(
+  data: Partial<Pick<ResilienceScoreResponse, 'lowConfidence' | 'imputationShare'>> | null | undefined,
+): boolean {
+  if (!data?.lowConfidence) return false;
+  const share = Number(data.imputationShare);
+  return Number.isFinite(share) && share >= RESILIENCE_PROVISIONAL_IMPUTATION_THRESHOLD;
+}
+
+export function getResilienceOverallDisplay(
+  data: Pick<ResilienceScoreResponse, 'overallScore' | 'level'> & Partial<Pick<ResilienceScoreResponse, 'lowConfidence' | 'imputationShare'>>,
+): ResilienceOverallDisplay {
   const rawScore = Number(data.overallScore);
   const visualLevel = getResilienceVisualLevel(rawScore);
+  if (isResilienceScoreProvisional(data)) {
+    const sharePct = Math.round(Number(data.imputationShare) * 100);
+    return {
+      hasScore: false,
+      scoreForBar: 0,
+      scoreLabel: '—',
+      visualLevel: 'unknown',
+      visualLevelLabel: '데이터 수집 중',
+      serverLevelLabel: `지표의 ${sharePct}%가 대체값이라 점수를 잠시 가려요. 데이터가 쌓이면 자동으로 표시돼요. (API 등급: ${formatResilienceServerLevel(data.level)})`,
+    };
+  }
   if (!hasScoredResilienceOverall(data)) {
     return {
       hasScore: false,

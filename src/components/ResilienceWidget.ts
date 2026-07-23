@@ -53,6 +53,8 @@ export class ResilienceWidget {
   private errorMessage: string | null = null;
   private requestVersion = 0;
   private energyMixData: CountryEnergyProfileData | null = null;
+  /** body 에 포털된 (?) 툴팁 — destroy 시 직접 제거해야 누수가 없다. */
+  private helpTooltipEl: HTMLElement | null = null;
 
   constructor(countryCode?: string | null) {
     this.element = document.createElement('section');
@@ -136,6 +138,8 @@ export class ResilienceWidget {
     this.requestVersion += 1;
     this.unsubscribeAuth?.();
     this.unsubscribeAuth = null;
+    this.helpTooltipEl?.remove();
+    this.helpTooltipEl = null;
   }
 
   private getGateReason(): PanelGateReason {
@@ -152,18 +156,62 @@ export class ResilienceWidget {
         'div',
         { className: 'resilience-widget__header' },
         h('h3', { className: 'cdp-card-title resilience-widget__title' }, '회복탄력성 점수'),
-        h(
-          'span',
-          {
-            className: 'resilience-widget__help',
-            title: METHODOLOGY_HELP_TITLE,
-            'aria-label': '회복탄력성 점수 산정 방식',
-          },
-          '?',
-        ),
+        this.buildHelpButton(),
       ),
       body,
     );
+  }
+
+  // KCG fork: native title 은 호버 지연이 길고 환경에 따라 아예 안 떠서
+  // (07-23 사장님 리포트) 패널 (?) 와 같은 body-포털 커스텀 툴팁으로 교체.
+  // 호버 즉시 표시 + 클릭 토글(터치), 패널 overflow 클리핑을 피하려고
+  // fixed 좌표로 body 에 붙인다 — Panel.ts infoTooltip 패턴과 동일.
+  private buildHelpButton(): HTMLElement {
+    const btn = h('button', {
+      type: 'button',
+      className: 'resilience-widget__help',
+      'aria-label': '회복탄력성 점수 산정 방식',
+    }, '?') as HTMLButtonElement;
+
+    const show = () => this.showHelpTooltip(btn);
+    const hide = () => this.helpTooltipEl?.classList.remove('visible');
+    btn.addEventListener('mouseenter', show);
+    btn.addEventListener('mouseleave', hide);
+    btn.addEventListener('focus', show);
+    btn.addEventListener('blur', hide);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.helpTooltipEl?.classList.contains('visible')) hide();
+      else show();
+    });
+    return btn;
+  }
+
+  private showHelpTooltip(anchor: HTMLElement): void {
+    if (!this.helpTooltipEl) {
+      const tooltip = h('div', { className: 'panel-info-tooltip resilience-widget__help-tooltip' }, METHODOLOGY_HELP_TITLE);
+      tooltip.style.position = 'fixed';
+      document.body.appendChild(tooltip);
+      this.helpTooltipEl = tooltip;
+    }
+    const tooltip = this.helpTooltipEl;
+    const rect = anchor.getBoundingClientRect();
+    tooltip.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+    tooltip.style.top = `${Math.round(rect.bottom + 8)}px`;
+    tooltip.style.removeProperty('--kcg-tooltip-shift');
+    tooltip.classList.add('visible');
+    // 뷰포트 가장자리 클램프(가로) + 아래 공간 부족 시 위로 전개(세로).
+    requestAnimationFrame(() => {
+      const tipRect = tooltip.getBoundingClientRect();
+      const margin = 8;
+      let shift = 0;
+      if (tipRect.left < margin) shift = margin - tipRect.left;
+      else if (tipRect.right > window.innerWidth - margin) shift = window.innerWidth - margin - tipRect.right;
+      if (shift !== 0) tooltip.style.setProperty('--kcg-tooltip-shift', `${Math.round(shift)}px`);
+      if (tipRect.bottom > window.innerHeight - margin) {
+        tooltip.style.top = `${Math.round(rect.top - tipRect.height - 8)}px`;
+      }
+    });
   }
 
   private renderBody(gateReason: PanelGateReason): HTMLElement {

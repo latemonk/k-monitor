@@ -43,7 +43,7 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: '해상사고 뉴스', url: gnLocale('해상사고 OR 선박사고 OR 조난', 'ko', 'KR', 'KR:ko'), lang: 'ko' },
       { name: '기상특보 뉴스', url: gnLocale('기상특보 OR 풍랑주의보 OR 태풍', 'ko', 'KR', 'KR:ko'), lang: 'ko' },
       { name: '불법조업 뉴스', url: gnLocale('불법조업 OR 중국어선 OR NLL', 'ko', 'KR', 'KR:ko'), lang: 'ko' },
-      { name: '한국해운신문', url: 'http://www.maritimepress.co.kr/rss/allArticle.xml', lang: 'ko' },
+      { name: '한국해운신문', url: 'https://www.maritimepress.co.kr/rss/allArticle.xml', lang: 'ko' },
       { name: '쉬핑뉴스넷', url: 'https://www.shippingnewsnet.com/rss/allArticle.xml', lang: 'ko' },
       { name: '현대해양', url: 'https://www.hdhy.co.kr/rss/allArticle.xml', lang: 'ko' },
       { name: '해사정보신문', url: 'https://www.haesainfo.com/rss/allArticle.xml', lang: 'ko' },

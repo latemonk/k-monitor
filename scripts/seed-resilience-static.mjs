@@ -209,11 +209,22 @@ function upsertDatasetRecord(target, iso2, datasetField, value) {
   target.set(iso2, current);
 }
 
+// 2026-07 World Bank WGI 개편: 기존 indicator id(VA.EST 등)는 기본
+// WDI 데이터베이스에서 삭제("deleted or archived")됐고, WGI 전용
+// 데이터베이스(source=3)에서 GOV_WGI_ 접두사가 붙은 새 id 로만 서빙된다
+// (VA.EST → GOV_WGI_VA.EST). API 요청만 새 체계로 보내고, Redis 페이로드와
+// 스코어러가 읽는 키는 기존 id 그대로 유지한다 — 소비자 쪽 변경 없음.
+const WGI_API_SOURCE_PARAMS = { mrv: '12', source: '3' };
+
+export function wgiApiIndicatorId(indicatorId) {
+  return `GOV_WGI_${indicatorId}`;
+}
+
 export async function fetchWgiDataset() {
   const merged = new Map();
   const results = await Promise.allSettled(
     WGI_INDICATORS.map((indicatorId) =>
-      fetchWorldBankIndicatorRows(indicatorId, { mrv: '12' })
+      fetchWorldBankIndicatorRows(wgiApiIndicatorId(indicatorId), WGI_API_SOURCE_PARAMS)
         .then(selectLatestWorldBankByCountry)
         .then((countryMap) => ({ indicatorId, countryMap })),
     ),

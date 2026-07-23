@@ -22,6 +22,8 @@ import {
   getResilienceTrendArrow,
   getResilienceVisualLevel,
   hasScoredResilienceOverall,
+  isResilienceScoreProvisional,
+  RESILIENCE_PROVISIONAL_IMPUTATION_THRESHOLD,
   getStalenessIcon,
   getStalenessLabel,
   shouldRenderResilienceBaselineStress,
@@ -144,6 +146,48 @@ test('getResilienceOverallDisplay distinguishes positive sub-1 scores from expli
     visualLevelLabel: '매우 낮음',
     serverLevelLabel: 'API 등급: 낮음',
   });
+});
+
+test('getResilienceOverallDisplay hides the headline number when most of the score is imputed', () => {
+  // 07-23 KR 실사고 재현: 시드가 빈 셀프호스팅 팟에서 imputationShare
+  // 0.9722 → min-pillar 페널티가 19.68 "매우 낮음"을 만들었다. 이 표시는
+  // 오정보이므로 잠정(데이터 수집 중)으로 가려야 한다.
+  assert.equal(isResilienceScoreProvisional({ lowConfidence: true, imputationShare: 0.9722 }), true);
+  const display = getResilienceOverallDisplay({
+    overallScore: 19.68,
+    level: 'low',
+    lowConfidence: true,
+    imputationShare: 0.9722,
+  });
+  assert.equal(display.hasScore, false);
+  assert.equal(display.scoreLabel, '—');
+  assert.equal(display.visualLevel, 'unknown');
+  assert.equal(display.visualLevelLabel, '데이터 수집 중');
+  assert.match(display.serverLevelLabel, /97%가 대체값/);
+  assert.match(display.serverLevelLabel, /API 등급: 낮음/);
+});
+
+test('getResilienceOverallDisplay keeps the score when confidence is low but imputation is under the threshold', () => {
+  // 시드가 채워진 뒤의 KR: imputationShare 0.2988 — lowConfidence 배지는
+  // 남지만 점수는 그대로 보여야 한다.
+  assert.equal(isResilienceScoreProvisional({ lowConfidence: true, imputationShare: 0.2988 }), false);
+  const display = getResilienceOverallDisplay({
+    overallScore: 53.04,
+    level: 'medium',
+    lowConfidence: true,
+    imputationShare: 0.2988,
+  });
+  assert.equal(display.hasScore, true);
+  assert.equal(display.scoreLabel, '53');
+});
+
+test('isResilienceScoreProvisional requires the lowConfidence flag, not just high imputation', () => {
+  assert.equal(isResilienceScoreProvisional({ lowConfidence: false, imputationShare: 0.99 }), false);
+  assert.equal(isResilienceScoreProvisional(null), false);
+  assert.equal(
+    isResilienceScoreProvisional({ lowConfidence: true, imputationShare: RESILIENCE_PROVISIONAL_IMPUTATION_THRESHOLD }),
+    true,
+  );
 });
 
 test('getResilienceOverallDisplay separates visual band from API level', () => {
