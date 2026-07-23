@@ -821,6 +821,7 @@ export class DeckGLMap {
   private selectedAircraftTimer: ReturnType<typeof setInterval> | null = null;
   private kcgAircraftCard: HTMLDivElement | null = null;
   private kcgAircraftCardFields: Map<string, HTMLElement> = new Map();
+  private kcgAircraftCardReposition: (() => void) | null = null;
 
   /** 공역 항공기 현황 패널 → 항공기 선택(궤적+상세 카드). */
   private kcgSelectAircraftListener = (e: Event): void => {
@@ -890,6 +891,10 @@ export class DeckGLMap {
     this.kcgAircraftCard?.remove();
     this.kcgAircraftCard = null;
     this.kcgAircraftCardFields.clear();
+    if (this.kcgAircraftCardReposition) {
+      window.removeEventListener('resize', this.kcgAircraftCardReposition);
+      this.kcgAircraftCardReposition = null;
+    }
     this.render();
   }
 
@@ -908,7 +913,25 @@ export class DeckGLMap {
         if (this.selectedAircraftIcao !== icao) return;
         const status = this.kcgAircraftCardFields.get('status');
         if (!live || !live.found) {
-          if (status) { status.textContent = '신호 소실 — 수신 대기 중'; status.style.color = '#f0a020'; }
+          // KCG fork(07-23): adsb.lol 단건(icao) 조회는 그 순간 피드에 없으면
+          // 잠깐 not-found 를 준다 → '신호 소실'이 자주 깜빡였다(사장님 리포트).
+          // 뷰포트 10초 스냅샷에 이 기체가 아직 있으면 그 값으로 카드를 계속
+          // 갱신하고 추적 상태를 유지한다. 뷰포트에도 없을 때만 소실 표시.
+          const vp = this.aircraftPositions.find((p) => (p.icao24 || '').toLowerCase() === icao);
+          if (vp) {
+            this.updateKcgAircraftCard({
+              callsign: (vp.callsign || '').trim() || undefined,
+              squawk: vp.squawk || undefined,
+              lat: vp.lat, lon: vp.lon,
+              altBaroFt: typeof vp.altitudeFt === 'number' && vp.altitudeFt > 0 ? vp.altitudeFt : null,
+              onGround: vp.onGround,
+              gsKt: typeof vp.groundSpeedKts === 'number' ? vp.groundSpeedKts : null,
+              track: typeof vp.trackDeg === 'number' ? vp.trackDeg : null,
+            });
+            if (status) { status.textContent = '실시간 추적 중 (2초 주기)'; status.style.color = '#5fbf7f'; }
+          } else if (status) {
+            status.textContent = '신호 소실 — 수신 대기 중'; status.style.color = '#f0a020';
+          }
           return;
         }
         this.updateKcgAircraftCard(live);
@@ -952,6 +975,15 @@ export class DeckGLMap {
     return row;
   }
 
+  private positionKcgAircraftCard(): void {
+    if (!this.kcgAircraftCard) return;
+    const r = this.container.getBoundingClientRect();
+    // 지도 우상단 안쪽 12px. 지도 컨트롤(우상단)은 이제 카드 아래(z) 이므로
+    // 겹쳐도 카드가 항상 위에 온다.
+    this.kcgAircraftCard.style.top = `${Math.round(r.top + 12)}px`;
+    this.kcgAircraftCard.style.left = `${Math.round(r.right - 258 - 12)}px`;
+  }
+
   private buildKcgAircraftCard(d: PositionSample): void {
     this.kcgAircraftCard?.remove();
     this.kcgAircraftCardFields.clear();
@@ -961,9 +993,13 @@ export class DeckGLMap {
     // KCG fork(07-23 사장님 지시): 좌상단은 레이어 패널과 겹치고 헤더에
     // 상단이 잘려서 → 지도 우측(넓은 여백)으로 이동. z-index 도 레이어
     // 드롭다운(패널류) 위로 올린다.
+    // KCG fork(07-23 사장님 피드백 2차): this.container 안에 두면 지도 컨트롤
+    // (⛶ 전체보기·줌)이 별도 스택 컨텍스트라 카드 위로 겹쳤다. body 에 fixed
+    // 포털로 띄워 최상단(z-index 2000)에 올리고, 좌표는 지도 컨테이너 우상단
+    // 기준으로 계산한다(리사이즈 시 갱신).
     card.style.cssText = [
-      'position:absolute', 'top:12px', 'right:12px', 'z-index:1200', 'width:258px',
-      'max-height:calc(100% - 24px)', 'overflow-y:auto',
+      'position:fixed', 'z-index:2000', 'width:258px',
+      'max-height:60vh', 'overflow-y:auto',
       'background:rgba(10,18,28,0.94)', 'border:1px solid rgba(0,209,255,0.3)',
       'border-radius:8px', 'padding:10px 12px', 'font-size:12px', 'color:#dce8f2',
       'backdrop-filter:blur(6px)', 'box-shadow:0 4px 20px rgba(0,0,0,0.5)',
@@ -1017,8 +1053,13 @@ export class DeckGLMap {
     this.kcgAircraftCardFields.set('status', status);
     card.append(status);
 
-    this.container.append(card);
+    document.body.append(card);
     this.kcgAircraftCard = card;
+    this.positionKcgAircraftCard();
+    if (!this.kcgAircraftCardReposition) {
+      this.kcgAircraftCardReposition = () => this.positionKcgAircraftCard();
+      window.addEventListener('resize', this.kcgAircraftCardReposition);
+    }
 
     // KCG fork(07-23): 첫 폴이 오기 전 '—' 고착을 막으려고 클릭 시점의
     // 뷰포트 스냅샷 값으로 즉시 시딩(고도·속도·트랙·스쿼크·위치).
@@ -3982,18 +4023,24 @@ export class DeckGLMap {
       if (controller.signal.aborted || this.liveTankersAbort !== controller) {
         return;
       }
-      const flat = zones.flatMap((z) => z.tankers).map((t) => ({
-        mmsi: t.mmsi,
-        lat: t.lat,
-        lon: t.lon,
-        speed: t.speed,
-        shipType: t.shipType,
-        name: t.name,
-        heading: t.heading,
-        course: t.course,
-        timestamp: t.timestamp,
-      }));
-      this.liveTankers = flat;
+      // KCG fork(07-23 사장님 리포트): 6개 감시구역 박스가 ±2°로 겹쳐서 경계
+      // 근처 선박이 여러 존 응답에 중복으로 들어온다. 존별 스냅샷 캐시 나이가
+      // 달라 같은 MMSI 가 조금씩 다른 위치/시각으로 두 번 찍혔다. MMSI 기준
+      // 중복 제거하되, 가장 신선한(timestamp 최신) 관측을 남긴다.
+      const byMmsi = new Map();
+      for (const z of zones) {
+        for (const t of z.tankers) {
+          const prev = byMmsi.get(t.mmsi);
+          if (!prev || (t.timestamp ?? 0) > (prev.timestamp ?? 0)) {
+            byMmsi.set(t.mmsi, {
+              mmsi: t.mmsi, lat: t.lat, lon: t.lon, speed: t.speed,
+              shipType: t.shipType, name: t.name, heading: t.heading,
+              course: t.course, timestamp: t.timestamp,
+            });
+          }
+        }
+      }
+      this.liveTankers = [...byMmsi.values()];
       this.updateLayers();
     } catch {
       // Graceful: leave existing tankers in place; layer will continue
