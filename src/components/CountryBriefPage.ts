@@ -16,6 +16,7 @@ import { exportCountryBriefJSON, exportCountryBriefCSV, exportCountryEvidenceMar
 import type { CountryBriefExport, CountryEvidenceBundleInput } from '@/utils/export';
 import { ME_STRIKE_BOUNDS } from '@/services/country-geometry';
 import { toFlagEmoji } from '@/utils/country-flag';
+import { koCountryDisplayName } from '@/utils/kcg-ko-labels';
 import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 import { getAuthState } from '@/services/auth-state';
 import { hasPremiumAccess } from '@/services/panel-gating';
@@ -374,6 +375,8 @@ export class CountryBriefPage implements CountryBriefPanel {
   }
 
   public show(country: string, code: string, score: CountryScore | null, signals: CountryBriefSignals): void {
+    // KCG fork: Korean-only console — display every country name in Korean.
+    country = koCountryDisplayName(code, country);
     this.abortController.abort();
     this.abortController = new AbortController();
     this.currentCode = code;

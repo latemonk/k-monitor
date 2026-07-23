@@ -166,6 +166,7 @@
 
 .cdp-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
@@ -176,6 +177,8 @@
   display: flex;
   gap: 10px;
   align-items: flex-start;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .cdp-flag {
@@ -187,6 +190,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .cdp-country-name {
@@ -194,15 +198,22 @@
   font-size: 18px;
   color: var(--text);
   line-height: 1.2;
+  /* Korean names must not wrap per-character when the header is narrow */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  min-width: 8ch;
 }
 
 .cdp-country-subtitle {
   color: var(--text-muted);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .cdp-header-right {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 

@@ -16,7 +16,7 @@ import { PORTS } from '@/config/ports';
 import { getChokepointRoutes } from '@/config/trade-routes';
 import { STRATEGIC_WATERWAYS } from '@/config/geo';
 import { fetchBypassOptions, fetchChokepointStatus } from '@/services/supply-chain';
-import { koHs4Label, koHs2Label, koChokepointName, koWarRiskTier, koCountryName } from '@/utils/kcg-ko-labels';
+import { koHs4Label, koHs2Label, koChokepointName, koWarRiskTier, koCountryName, koCountryDisplayName } from '@/utils/kcg-ko-labels';
 import { haversineDistanceKm } from '@/services/related-assets';
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
 import type {
@@ -270,6 +270,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
   }
 
   public show(country: string, code: string, score: CountryScore | null, signals: CountryBriefSignals): void {
+    // KCG fork: Korean-only console — display every country name in Korean,
+    // regardless of the (English) name the caller resolved.
+    country = koCountryDisplayName(code, country);
     this.abortController.abort();
     this.abortController = new AbortController();
     this.currentCode = code;

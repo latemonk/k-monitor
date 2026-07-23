@@ -19,8 +19,9 @@ K-Monitor는 [World Monitor](https://github.com/koala73/worldmonitor)(© Elie Ha
 |---|---|
 | 🗺 **지도·권역** | 한반도 중심 권역 프리셋, 한국 근해 감시 타일 설계, 레이어 전면 재구성 |
 | 📰 **뉴스** | 한국 주요 미디어(통신사·방송·신문) 실시간 피드 통합, 종합/해양/항공/안보/재난 채널 분류, 실시간 속보 스트림 |
-| 🤖 **AI 분석** | 한국어 AI 인사이트 브리프(뉴스 클러스터 요약·정세 분석), 국가별 AI 브리핑 — OpenAI 호환 어떤 LLM으로도 동작 |
+| 🤖 **AI 분석** | 한국어 AI 인사이트 브리프(뉴스 클러스터 요약·정세 분석), 국가별 AI 브리핑 — OpenAI 호환 어떤 LLM으로도 동작, [BizRouter](https://bizrouter.ai) 스마트 라우팅 권장 |
 | 🚢 **선박(AIS)** | aisstream 웹소켓(주) + VesselAPI 스윕(보강) 이중 소스 릴레이, 월 쿼터 원자적 예약 엔진, 부산·인천·울산 입출항 이벤트 |
+| 🌊 **해양 기상·수온** | [BluePin](https://bluepin.ai) 해양 관측·예측 API — 국립해양조사원·기상청 해양부이·수산과학원 통합, 연안 6구역 수온·파고·돌풍 |
 | ✈️ **항공** | adsb.lol 기반 무키 실데이터 군용기 추적, 비상 스쿼크(7500/7600/7700) 감지 |
 | 🎯 **관심 대상 추적** | 선박·항공기 워치리스트: 항적 오버레이, 신호 소실·장기 정지·급변침·민감 해역 진입·급강하 알림 |
 | 🌏 **국가 정보** | 원본의 유료(PRO) 잠금 전면 제거 — IMF·미 재무부(국가부채), OFAC(제재), UN Comtrade(수입품목·무역흐름), World Bank(관세) 등 **전부 무료 공공 데이터로 대체** |
@@ -59,12 +60,13 @@ docker run -p 8080:8080 \
 |---|---|---|---|
 | `AISSTREAM_API_KEY` | 실시간 선박(AIS) 웹소켓 | https://aisstream.io — 가입 후 대시보드에서 무료 발급 | 무료. 한반도 박스 구독으로 사용 |
 | `VESSELAPI_API_KEY` | 선박 스윕 보강·검색·항적·입출항 | https://vesselapi.com — 가입 후 API 키 발급 | 유료(월 콜 쿼터). 내장 쿼터 엔진이 월 1,500콜 기준으로 예산 관리. `VESSELAPI_MAX_SWEEP_CALLS`, `VESSELAPI_SWEEP_INTERVAL_MS`로 조정 |
-| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` | AI 인사이트·브리프 생성 | OpenAI 호환 엔드포인트 아무거나 — OpenAI(platform.openai.com), Groq(console.groq.com), OpenRouter(openrouter.ai), 자체 호스팅 vLLM 등 | 한국어 출력 품질이 좋은 모델 권장 |
+| `BIZROUTER_API_KEY` | AI 인사이트·브리프·요약 (권장) | https://bizrouter.ai — 가입 후 API 키 발급 | OpenAI 호환 LLM 게이트웨이. 기본 `route` 모델이 요청마다 최적 모델을 자동 선택(스마트 라우팅), 한국어 출력 품질 우수. `BIZROUTER_MODEL`로 모델 고정 가능 |
+| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` | AI 인사이트·브리프 생성 (직접 지정 시) | OpenAI 호환 엔드포인트 아무거나 — OpenAI(platform.openai.com), 자체 호스팅 vLLM 등 | 한국어 출력 품질이 좋은 모델 권장 |
 | `GROQ_API_KEY` | (선택) 요약 폴백 체인 | https://console.groq.com | 무료 티어 일 14,400건 |
-| `OPENROUTER_API_KEY` | (선택) 요약 폴백 체인 | https://openrouter.ai | 무료 티어 일 50건 |
+| `BLUEPIN_API_URL` / `BLUEPIN_API_KEY` | (선택) 해양 기상·수온(연안 6구역) | https://bluepin.ai — BluePin 해양 관측·예측 API | 기본 공개 미리보기 엔드포인트는 **키 없이 동작**해요. 전용 플랜 사용 시에만 설정 |
 | `WM_SESSION_SECRET` | 브라우저 세션 HMAC | 임의 랜덤 문자열 | 미설정 시 부팅마다 자동 생성(단일 replica면 그대로 OK) |
 
-항공(군용기) 데이터는 [adsb.lol](https://adsb.lol) 공개 API를 사용하므로 **키가 필요 없습니다.** 국가 정보 카드(국가부채·제재·무역·관세)도 IMF·OFAC·UN Comtrade·World Bank 공개 API로 동작하므로 키가 필요 없습니다. 그 밖의 선택 키(FRED, NASA FIRMS 등 원본 기능용)는 `.env.example`에 정리돼 있습니다.
+항공(군용기) 데이터는 [adsb.lol](https://adsb.lol) 공개 API를 사용하므로 **키가 필요 없습니다.** 국가 정보 카드(국가부채·제재·무역·관세)도 IMF·OFAC·UN Comtrade·World Bank 공개 API로 동작하므로 키가 필요 없습니다. 해양 기상·수온 패널은 [BluePin](https://bluepin.ai) 해양 관측·예측 API(국립해양조사원·기상청 해양부이·수산과학원 통합)를 사용하며, 기본 공개 엔드포인트는 키 없이 동작합니다. 그 밖의 선택 키(FRED, NASA FIRMS 등 원본 기능용)는 `.env.example`에 정리돼 있습니다.
 
 ---
 

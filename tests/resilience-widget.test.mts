@@ -89,18 +89,18 @@ test('getResilienceOverallDisplay treats negative and non-finite scores as insuf
   assert.deepEqual(getResilienceOverallDisplay({ overallScore: -1, level: 'unknown' }), {
     hasScore: false,
     scoreForBar: 0,
-    scoreLabel: 'n/a',
+    scoreLabel: '—',
     visualLevel: 'unknown',
-    visualLevelLabel: 'Insufficient data',
-    serverLevelLabel: 'API level: unknown',
+    visualLevelLabel: '데이터 부족',
+    serverLevelLabel: 'API 등급: 알 수 없음',
   });
   assert.deepEqual(getResilienceOverallDisplay({ overallScore: Number.NaN, level: 'low' }), {
     hasScore: false,
     scoreForBar: 0,
-    scoreLabel: 'n/a',
+    scoreLabel: '—',
     visualLevel: 'unknown',
-    visualLevelLabel: 'Insufficient data',
-    serverLevelLabel: 'API level: low',
+    visualLevelLabel: '데이터 부족',
+    serverLevelLabel: 'API 등급: 낮음',
   });
 });
 
@@ -113,10 +113,10 @@ test('getResilienceOverallDisplay treats null, undefined, and API unknown zero a
   assert.deepEqual(getResilienceOverallDisplay({ overallScore: 0, level: 'unknown' }), {
     hasScore: false,
     scoreForBar: 0,
-    scoreLabel: 'n/a',
+    scoreLabel: '—',
     visualLevel: 'unknown',
-    visualLevelLabel: 'Insufficient data',
-    serverLevelLabel: 'API level: unknown',
+    visualLevelLabel: '데이터 부족',
+    serverLevelLabel: 'API 등급: 알 수 없음',
   });
 });
 
@@ -127,8 +127,8 @@ test('getResilienceOverallDisplay keeps explicit zero scores when API level is r
     scoreForBar: 0,
     scoreLabel: '0',
     visualLevel: 'very_low',
-    visualLevelLabel: 'Visual band: VERY LOW',
-    serverLevelLabel: 'API level: low',
+    visualLevelLabel: '매우 낮음',
+    serverLevelLabel: 'API 등급: 낮음',
   });
 });
 
@@ -141,8 +141,8 @@ test('getResilienceOverallDisplay distinguishes positive sub-1 scores from expli
     scoreForBar: 0.4,
     scoreLabel: '<1',
     visualLevel: 'very_low',
-    visualLevelLabel: 'Visual band: VERY LOW',
-    serverLevelLabel: 'API level: low',
+    visualLevelLabel: '매우 낮음',
+    serverLevelLabel: 'API 등급: 낮음',
   });
 });
 
@@ -152,8 +152,8 @@ test('getResilienceOverallDisplay separates visual band from API level', () => {
     scoreForBar: 61.2,
     scoreLabel: '61',
     visualLevel: 'high',
-    visualLevelLabel: 'Visual band: HIGH',
-    serverLevelLabel: 'API level: medium',
+    visualLevelLabel: '높음',
+    serverLevelLabel: 'API 등급: 보통',
   });
 });
 
@@ -169,10 +169,10 @@ test('resilience methodology help copy derives current counts from the preview f
   });
 
   const title = formatResilienceMethodologyHelpTitle(summary);
-  assert.match(title, new RegExp(`${summary.activeDimensionCount} active dimensions`));
-  assert.match(title, new RegExp(`${summary.domainCount} domains`));
-  assert.match(title, new RegExp(`${summary.pillarCount} pillars`));
-  assert.match(title, /pillar detail appears when the API response includes it/i);
+  assert.match(title, new RegExp(`활성 지표 ${summary.activeDimensionCount}개`));
+  assert.match(title, new RegExp(`${summary.domainCount}개 영역`));
+  assert.match(title, new RegExp(`${summary.pillarCount}개 축`));
+  assert.match(title, /API 응답에 포함되면 축별 상세도 표시해요/);
 });
 
 test('getResilienceTrendArrow renders the expected glyphs', () => {
@@ -183,23 +183,23 @@ test('getResilienceTrendArrow renders the expected glyphs', () => {
 });
 
 test('getResilienceDomainLabel keeps the deep-dive shorthand labels stable', () => {
-  assert.equal(getResilienceDomainLabel('economic'), 'Economic');
-  assert.equal(getResilienceDomainLabel('infrastructure'), 'Infra & Supply');
-  assert.equal(getResilienceDomainLabel('energy'), 'Energy');
-  assert.equal(getResilienceDomainLabel('social-governance'), 'Social & Gov');
-  assert.equal(getResilienceDomainLabel('health-food'), 'Health & Food');
+  assert.equal(getResilienceDomainLabel('economic'), '경제');
+  assert.equal(getResilienceDomainLabel('infrastructure'), '인프라·공급망');
+  assert.equal(getResilienceDomainLabel('energy'), '에너지');
+  assert.equal(getResilienceDomainLabel('social-governance'), '사회·거버넌스');
+  assert.equal(getResilienceDomainLabel('health-food'), '보건·식량');
   // Regression for the missing sixth-domain label. Before this pin, the
   // recovery row rendered as the raw id "recovery" because DOMAIN_LABELS
   // was a 5-entry map from the pre-recovery-domain era.
-  assert.equal(getResilienceDomainLabel('recovery'), 'Recovery');
+  assert.equal(getResilienceDomainLabel('recovery'), '회복 여력');
   assert.equal(getResilienceDomainLabel('custom-domain'), 'custom-domain');
 });
 
 test('formatResilienceConfidence shows sparse-data copy when low confidence is set', () => {
-  assert.equal(formatResilienceConfidence(baseResponse), 'Coverage 90% ✓');
+  assert.equal(formatResilienceConfidence(baseResponse), '커버리지 90% ✓');
   assert.equal(
     formatResilienceConfidence({ ...baseResponse, lowConfidence: true }),
-    'Low confidence — sparse data',
+    '신뢰도 낮음 — 데이터 부족',
   );
 });
 
@@ -216,14 +216,14 @@ test('formatResilienceConfidence shows sparse-data copy when low confidence is s
 test('formatResilienceConfidence: headlineEligible=false renders the outside-ranking badge', () => {
   assert.equal(
     formatResilienceConfidence({ ...baseResponse, headlineEligible: false }),
-    'Outside headline ranking',
+    '순위 집계 대상 아님',
   );
 });
 
 test('formatResilienceConfidence: lowConfidence wins when both flags fire (specificity precedence)', () => {
   assert.equal(
     formatResilienceConfidence({ ...baseResponse, lowConfidence: true, headlineEligible: false }),
-    'Low confidence — sparse data',
+    '신뢰도 낮음 — 데이터 부족',
   );
 });
 
@@ -232,7 +232,7 @@ test('formatResilienceConfidence: headlineEligible=true is the silent normal cas
   // trip the new false-branch.
   assert.equal(
     formatResilienceConfidence({ ...baseResponse, headlineEligible: true }),
-    'Coverage 90% ✓',
+    '커버리지 90% ✓',
   );
 });
 
@@ -262,7 +262,7 @@ test('formatResilienceConfidence derates stale observed coverage like the server
   };
 
   // Server mirror: (stale 1.0 * 0.4 + fresh 1.0) / 2 = 0.7.
-  assert.equal(formatResilienceConfidence(staleObserved), 'Coverage 70% ✓');
+  assert.equal(formatResilienceConfidence(staleObserved), '커버리지 70% ✓');
 });
 
 test('formatResilienceConfidence derates aging observed coverage like the server', () => {
@@ -291,7 +291,7 @@ test('formatResilienceConfidence derates aging observed coverage like the server
   };
 
   // Server mirror: aging 1.0 * 0.7 = 0.7.
-  assert.equal(formatResilienceConfidence(agingObserved), 'Coverage 70% ✓');
+  assert.equal(formatResilienceConfidence(agingObserved), '커버리지 70% ✓');
 });
 
 // PR 3 §3.5 follow-up: retired dimensions (fuelStockDays, post-PR-3)
@@ -330,20 +330,20 @@ test('formatResilienceConfidence excludes retired dimensions by ID (not by cover
   // If fuelStockDays were included: (0.9 + 0 + 0.8 + 0) / 4 = 0.425 → 43%.
   // If we filtered by coverage=0: (0.9 + 0.8) / 2 = 0.85 → 85% (the
   // over-aggressive filter that would mask genuine sparsity).
-  assert.equal(formatResilienceConfidence(withRetired), 'Coverage 57% ✓');
+  assert.equal(formatResilienceConfidence(withRetired), '커버리지 57% ✓');
 });
 
 test('formatResilienceChange30d preserves explicit sign formatting', () => {
-  assert.equal(formatResilienceChange30d(2.41), '30d +2.4');
-  assert.equal(formatResilienceChange30d(-1.26), '30d -1.3');
-  assert.equal(formatResilienceChange30d(0), '30d 0.0');
+  assert.equal(formatResilienceChange30d(2.41), '30일 +2.4');
+  assert.equal(formatResilienceChange30d(-1.26), '30일 -1.3');
+  assert.equal(formatResilienceChange30d(0), '30일 0.0');
 });
 
 test('formatBaselineStress renders the expected breakdown string (no Impact)', () => {
-  assert.equal(formatBaselineStress(72.1, 58.3), 'Baseline: 72 | Stress: 58');
-  assert.equal(formatBaselineStress(80, 100), 'Baseline: 80 | Stress: 100');
-  assert.equal(formatBaselineStress(50, 0), 'Baseline: 50 | Stress: 0');
-  assert.equal(formatBaselineStress(NaN, 50), 'Baseline: 0 | Stress: 50');
+  assert.equal(formatBaselineStress(72.1, 58.3), '기본 72 | 스트레스 58');
+  assert.equal(formatBaselineStress(80, 100), '기본 80 | 스트레스 100');
+  assert.equal(formatBaselineStress(50, 0), '기본 50 | 스트레스 0');
+  assert.equal(formatBaselineStress(NaN, 50), '기본 0 | 스트레스 50');
 });
 
 test('shouldRenderResilienceBaselineStress hides the row when the overall score is unavailable', () => {
@@ -358,7 +358,7 @@ test('shouldRenderResilienceBaselineStress hides the row when the overall score 
 
   assert.equal(getResilienceOverallDisplay(noScoreResponse).hasScore, false);
   assert.equal(shouldRenderResilienceBaselineStress(noScoreResponse), false);
-  assert.equal(formatResilienceConfidence(noScoreResponse), 'Low confidence — sparse data');
+  assert.equal(formatResilienceConfidence(noScoreResponse), '신뢰도 낮음 — 데이터 부족');
 });
 
 test('shouldRenderResilienceBaselineStress keeps explicit zero scores when the API level is real', () => {
@@ -377,7 +377,7 @@ test('shouldRenderResilienceBaselineStress keeps explicit zero scores when the A
 test('formatResilienceScoreInterval renders the overall score interval badge', () => {
   assert.deepEqual(formatResilienceScoreInterval({ p05: 65.2, p95: 72.8 }), {
     label: '[65\u201373]',
-    title: '95% score sensitivity band: 65.2 - 72.8',
+    title: '95% 점수 민감도 구간: 65.2 ~ 72.8',
   });
 });
 
@@ -402,8 +402,8 @@ test('formatResilienceDataVersion renders a "Seed date" label for a valid ISO da
   // so it is clear the value reflects the static-seed bundle refresh,
   // not the freshness of every live input feeding the score. Live
   // inputs carry their own per-dimension freshness badges.
-  assert.equal(formatResilienceDataVersion('2026-04-11'), 'Seed date 2026-04-11');
-  assert.equal(formatResilienceDataVersion('2024-01-01'), 'Seed date 2024-01-01');
+  assert.equal(formatResilienceDataVersion('2026-04-11'), '시드 2026-04-11');
+  assert.equal(formatResilienceDataVersion('2024-01-01'), '시드 2024-01-01');
 });
 
 test('formatResilienceDataVersion returns empty for missing or malformed dataVersion', () => {
@@ -431,8 +431,8 @@ test('formatResilienceDataVersion rejects regex-valid but calendar-invalid dates
   assert.equal(formatResilienceDataVersion('2024-02-30'), '');
   assert.equal(formatResilienceDataVersion('2024-02-31'), '');
   // Legitimate calendar dates still pass.
-  assert.equal(formatResilienceDataVersion('2024-02-29'), 'Seed date 2024-02-29'); // leap year
-  assert.equal(formatResilienceDataVersion('2023-02-28'), 'Seed date 2023-02-28');
+  assert.equal(formatResilienceDataVersion('2024-02-29'), '시드 2024-02-29'); // leap year
+  assert.equal(formatResilienceDataVersion('2023-02-28'), '시드 2023-02-28');
 });
 
 test('baseResponse includes dataVersion (regression for T1.4 wiring)', () => {
@@ -441,7 +441,7 @@ test('baseResponse includes dataVersion (regression for T1.4 wiring)', () => {
   // seed-meta key; the widget footer renders it via formatResilienceDataVersion.
   assert.equal(typeof baseResponse.dataVersion, 'string');
   assert.ok(baseResponse.dataVersion.length > 0, 'baseResponse should carry a non-empty dataVersion for regression coverage');
-  assert.equal(formatResilienceDataVersion(baseResponse.dataVersion), `Seed date ${baseResponse.dataVersion}`);
+  assert.equal(formatResilienceDataVersion(baseResponse.dataVersion), `시드 ${baseResponse.dataVersion}`);
 });
 
 // T1.6 Phase 1 of the country-resilience reference-grade upgrade plan.
@@ -451,34 +451,34 @@ test('baseResponse includes dataVersion (regression for T1.4 wiring)', () => {
 // status classification.
 
 test('getResilienceDimensionLabel returns short stable labels for all 22 dimensions', () => {
-  assert.equal(getResilienceDimensionLabel('macroFiscal'), 'Macro');
-  assert.equal(getResilienceDimensionLabel('currencyExternal'), 'Currency');
-  assert.equal(getResilienceDimensionLabel('tradePolicy'), 'Trade');
-  assert.equal(getResilienceDimensionLabel('financialSystemExposure'), 'Fin. Exposure');
-  assert.equal(getResilienceDimensionLabel('cyberDigital'), 'Cyber');
-  assert.equal(getResilienceDimensionLabel('logisticsSupply'), 'Logistics');
-  assert.equal(getResilienceDimensionLabel('infrastructure'), 'Infra');
-  assert.equal(getResilienceDimensionLabel('energy'), 'Energy');
-  assert.equal(getResilienceDimensionLabel('governanceInstitutional'), 'Gov');
-  assert.equal(getResilienceDimensionLabel('socialCohesion'), 'Social');
+  assert.equal(getResilienceDimensionLabel('macroFiscal'), '거시');
+  assert.equal(getResilienceDimensionLabel('currencyExternal'), '통화');
+  assert.equal(getResilienceDimensionLabel('tradePolicy'), '무역');
+  assert.equal(getResilienceDimensionLabel('financialSystemExposure'), '금융');
+  assert.equal(getResilienceDimensionLabel('cyberDigital'), '사이버');
+  assert.equal(getResilienceDimensionLabel('logisticsSupply'), '물류');
+  assert.equal(getResilienceDimensionLabel('infrastructure'), '인프라');
+  assert.equal(getResilienceDimensionLabel('energy'), '에너지');
+  assert.equal(getResilienceDimensionLabel('governanceInstitutional'), '거버넌스');
+  assert.equal(getResilienceDimensionLabel('socialCohesion'), '사회');
   // #3737 — relabeled from 'Border' so the displayed dimension name matches
   // what it actually measures (UCDP conflict + UNHCR displacement, not border
   // control infrastructure). Internal id stays `borderSecurity` for stability.
-  assert.equal(getResilienceDimensionLabel('borderSecurity'), 'Conflict');
-  assert.equal(getResilienceDimensionLabel('informationCognitive'), 'Info');
-  assert.equal(getResilienceDimensionLabel('healthPublicService'), 'Health');
-  assert.equal(getResilienceDimensionLabel('foodWater'), 'Food');
-  assert.equal(getResilienceDimensionLabel('fiscalSpace'), 'Fiscal');
-  assert.equal(getResilienceDimensionLabel('reserveAdequacy'), 'Reserves');
-  assert.equal(getResilienceDimensionLabel('externalDebtCoverage'), 'Ext Debt');
-  assert.equal(getResilienceDimensionLabel('importConcentration'), 'Imports');
-  assert.equal(getResilienceDimensionLabel('stateContinuity'), 'Continuity');
-  assert.equal(getResilienceDimensionLabel('fuelStockDays'), 'Fuel');
+  assert.equal(getResilienceDimensionLabel('borderSecurity'), '분쟁');
+  assert.equal(getResilienceDimensionLabel('informationCognitive'), '정보');
+  assert.equal(getResilienceDimensionLabel('healthPublicService'), '보건');
+  assert.equal(getResilienceDimensionLabel('foodWater'), '식량');
+  assert.equal(getResilienceDimensionLabel('fiscalSpace'), '재정');
+  assert.equal(getResilienceDimensionLabel('reserveAdequacy'), '외환보유');
+  assert.equal(getResilienceDimensionLabel('externalDebtCoverage'), '대외부채');
+  assert.equal(getResilienceDimensionLabel('importConcentration'), '수입집중');
+  assert.equal(getResilienceDimensionLabel('stateContinuity'), '연속성');
+  assert.equal(getResilienceDimensionLabel('fuelStockDays'), '연료');
   // PR 2 §3.4 — new active dimensions. Retired reserveAdequacy's
   // label stays ('Reserves'), and the live-data replacement
   // disambiguates with 'Liquid Reserves'.
-  assert.equal(getResilienceDimensionLabel('liquidReserveAdequacy'), 'Liquid Reserves');
-  assert.equal(getResilienceDimensionLabel('sovereignFiscalBuffer'), 'Sovereign Wealth');
+  assert.equal(getResilienceDimensionLabel('liquidReserveAdequacy'), '유동성');
+  assert.equal(getResilienceDimensionLabel('sovereignFiscalBuffer'), '국부펀드');
   // Unknown dimension IDs fall through to the raw ID so the render
   // never silently drops a row.
   assert.equal(getResilienceDimensionLabel('unknownDim'), 'unknownDim');
@@ -507,7 +507,7 @@ test('formatDimensionConfidence classifies observed-heavy dimensions as observed
     observedWeight: 0.9,
     imputedWeight: 0.1,
   });
-  assert.equal(result.label, 'Macro');
+  assert.equal(result.label, '거시');
   assert.equal(result.coveragePct, 90);
   assert.equal(result.status, 'observed');
   assert.equal(result.absent, false);
@@ -600,8 +600,8 @@ test('collectDimensionConfidences preserves scorer order across domains and dime
   assert.equal(result[1].id, 'currencyExternal');
   assert.equal(result[2].id, 'governanceInstitutional');
   // Labels are resolved for every entry.
-  assert.equal(result[0].label, 'Macro');
-  assert.equal(result[2].label, 'Gov');
+  assert.equal(result[0].label, '거시');
+  assert.equal(result[2].label, '거버넌스');
 });
 
 test('collectDimensionConfidences returns an empty list for an empty response', () => {

@@ -2,6 +2,29 @@ import { escapeHtml, sanitizeUrl } from '@/utils/sanitize';
 
 const SECTION_HEADERS = ['SITUATION NOW', 'WHAT THIS MEANS FOR', 'KEY RISKS', 'OUTLOOK', 'WATCH ITEMS'];
 
+// KCG fork: the LLM keeps the English section markers (they are the machine-
+// parsed contract, stable across models), and the UI renders them in Korean.
+// "WHAT THIS MEANS FOR <name>" carries the country name through as a tail so
+// both new Korean-name briefs and older cached English-name briefs display.
+function koSectionHeader(trimmed: string): string {
+  const upper = trimmed.toUpperCase();
+  if (upper.startsWith('SITUATION NOW')) return '현재 상황';
+  if (upper.startsWith('WHAT THIS MEANS FOR')) {
+    const tail = trimmed.slice('WHAT THIS MEANS FOR'.length).trim();
+    return tail ? `${tail}에 미치는 영향` : '주요 영향';
+  }
+  if (upper.startsWith('KEY RISKS')) return '주요 리스크';
+  if (upper.startsWith('OUTLOOK')) return '전망';
+  if (upper.startsWith('WATCH ITEMS')) return '관찰 포인트';
+  return trimmed;
+}
+
+const KO_OUTLOOK_LABELS: Record<string, string> = {
+  'NEXT 24H': '24시간 내',
+  'NEXT 48H': '48시간 내',
+  'NEXT 72H': '72시간 내',
+};
+
 export interface IntelBriefCitationSource {
   title?: string;
   url?: string;
@@ -34,16 +57,17 @@ export function formatIntelBrief(
 
     if (isHeader) {
       if (inSection) out.push('</div>');
-      out.push(`<div class="brief-section"><div class="brief-section-header">${trimmed}</div>`);
+      out.push(`<div class="brief-section"><div class="brief-section-header">${koSectionHeader(trimmed)}</div>`);
       inSection = true;
     } else if (trimmed.startsWith('•') || trimmed.startsWith('-')) {
       out.push(`<div class="brief-bullet">${trimmed.replace(/^[•-]\s*/, '')}</div>`);
     } else if (trimmed.startsWith('NEXT ')) {
       const colonIdx = trimmed.indexOf(':');
       if (colonIdx !== -1) {
-        const label = trimmed.slice(0, colonIdx);
+        const label = trimmed.slice(0, colonIdx).trim();
+        const koLabel = KO_OUTLOOK_LABELS[label.toUpperCase()] ?? label;
         const body = trimmed.slice(colonIdx + 1).trim();
-        out.push(`<div class="brief-outlook-row"><strong class="brief-outlook-label">${label}:</strong> ${body}</div>`);
+        out.push(`<div class="brief-outlook-row"><strong class="brief-outlook-label">${koLabel}:</strong> ${body}</div>`);
       } else {
         out.push(`<div class="brief-para">${trimmed}</div>`);
       }

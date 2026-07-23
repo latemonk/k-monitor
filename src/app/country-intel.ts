@@ -1141,7 +1141,9 @@ export class CountryIntelManager implements AppModule {
   }
 
   private async fetchCountryIntelBrief(code: string, contextSnapshot: string, framework = ''): Promise<CountryIntelBriefResult> {
-    const lang = getCurrentLanguage();
+    // KCG fork: Korean-only console — always request the Korean brief so the
+    // shared server cache entry is Korean regardless of browser language.
+    const lang = 'ko';
     const params = new URLSearchParams({ country_code: code, lang });
     const trimmed = contextSnapshot.trim();
     if (trimmed.length > 0) {

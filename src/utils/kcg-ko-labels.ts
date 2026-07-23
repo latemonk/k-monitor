@@ -105,6 +105,16 @@ let displayNames: Intl.DisplayNames | null | undefined;
  * ISO2 country code → Korean country name (falls back to the input).
  * Non-code inputs (already-resolved names) pass through unchanged.
  */
+/**
+ * Preferred Korean display name for a country. Resolves from the ISO2 code
+ * (covers every country via Intl.DisplayNames); falls back to the provided
+ * (English) name when the code can't be resolved to a localized name.
+ */
+export function koCountryDisplayName(code: string, fallback: string): string {
+  const resolved = koCountryName(code);
+  return /^[A-Z]{2}$/.test(resolved) ? fallback : resolved;
+}
+
 export function koCountryName(codeOrName: string): string {
   if (!/^[A-Za-z]{2}$/.test(codeOrName)) return codeOrName;
   if (displayNames === undefined) {

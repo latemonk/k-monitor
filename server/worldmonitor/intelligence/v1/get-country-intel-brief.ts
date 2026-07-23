@@ -22,6 +22,25 @@ const INTEL_CACHE_TTL = 21600;
 const COUNTRY_CODE_RE = /^[A-Za-z]{2}$/;
 const LANG_RE = /^[a-z]{2}(-[a-z]{2})?$/;
 
+let koDisplayNames: Intl.DisplayNames | null | undefined;
+
+function koreanCountryName(code: string): string | null {
+  if (koDisplayNames === undefined) {
+    try {
+      koDisplayNames = new Intl.DisplayNames(['ko'], { type: 'region' });
+    } catch {
+      koDisplayNames = null;
+    }
+  }
+  if (!koDisplayNames) return null;
+  try {
+    const name = koDisplayNames.of(code.toUpperCase());
+    return name && name !== code.toUpperCase() ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 function cleanSourceText(value: unknown, maxLen: number): string {
   if (typeof value !== 'string') return '';
   const text = value.replace(/\s+/g, ' ').trim();
@@ -162,6 +181,11 @@ export async function getCountryIntelBrief(
     energyYear,
   });
   const countryName = TIER1_COUNTRIES[req.countryCode.toUpperCase()] || req.countryCode;
+  // KCG fork: for Korean briefs the "WHAT THIS MEANS FOR <name>" header
+  // carries the Korean country name so the client renders e.g.
+  // "대한민국에 미치는 영향". The English marker prefix stays — it is the
+  // machine-parsed section contract (see src/utils/format-intel-brief.ts).
+  const headerCountryName = lang === 'ko' ? koreanCountryName(req.countryCode) ?? countryName : countryName;
   const dateStr = new Date().toISOString().split('T')[0];
 
   const systemPrompt = `You are a senior intelligence analyst. Current date: ${dateStr}.
@@ -171,7 +195,7 @@ Generate a structured intelligence brief using EXACTLY this format:
 SITUATION NOW
 [2-3 sentences on what is happening and why it matters for this country]
 
-WHAT THIS MEANS FOR ${countryName.toUpperCase()}
+WHAT THIS MEANS FOR ${headerCountryName.toUpperCase()}
 • [Named entity from infrastructure context]: [mechanism from active event] — [quantified impact if available]
 • [Named entity]: [mechanism] — [impact]
 • [Named entity]: [mechanism] — [impact]
@@ -192,11 +216,11 @@ WATCH ITEMS
 [Signal 1] · [Signal 2] · [Signal 3]
 
 Rules:
-- In "WHAT THIS MEANS FOR ${countryName.toUpperCase()}": use ONLY named infrastructure entities provided in the context (ports, pipelines, cables, waterways). Include actual numbers where available.
+- In "WHAT THIS MEANS FOR ${headerCountryName.toUpperCase()}": use ONLY named infrastructure entities provided in the context (ports, pipelines, cables, waterways). Include actual numbers where available.
 - If no infrastructure context is provided, use named economic sectors or companies instead.
 - Be specific. Avoid generic phrases like "supply chain disruption risk".
 - If "Brief source articles" are provided, cite supporting claims with bracket markers like [1] or [2]. Do not invent source numbers or URLs.
-- No speculation beyond what data supports.${lang === 'fr' ? '\n- IMPORTANT: You MUST respond ENTIRELY in French language.' : ''}`;
+- No speculation beyond what data supports.${lang === 'fr' ? '\n- IMPORTANT: You MUST respond ENTIRELY in French language.' : ''}${lang === 'ko' ? `\n- IMPORTANT: Write ALL content ENTIRELY in Korean (한국어), in a professional intelligence-analyst register. Keep the five section header lines EXACTLY as shown in the format above (SITUATION NOW / WHAT THIS MEANS FOR ${headerCountryName.toUpperCase()} / KEY RISKS / OUTLOOK / WATCH ITEMS) and keep the "NEXT 24H:", "NEXT 48H:", "NEXT 72H:" prefixes unchanged — they are machine-parsed. Every other line must be Korean.` : ''}`;
 
   let result: GetCountryIntelBriefResponse | null = null;
   try {

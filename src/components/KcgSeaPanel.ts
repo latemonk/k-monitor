@@ -63,7 +63,7 @@ export class KcgSeaPanel extends Panel {
           <thead><tr><th>구역</th><th>수온</th><th>파고</th><th>돌풍</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        <div class="kcgsea-foot">출처: BluePin 해양관측(국립해양조사원·기상청·수산과학원) · ${updated} 기준</div>
+        <div class="kcgsea-foot">출처: <a href="https://bluepin.ai" target="_blank" rel="noopener noreferrer">BluePin</a> 해양관측(국립해양조사원·기상청·수산과학원) · ${updated} 기준</div>
       </div>
       <style>
         .kcgsea-wrap { font-size: 12px; }
@@ -104,7 +104,7 @@ export class KcgSeaPanel extends Panel {
           ${row('돌풍', zone.gust)}
         </tbody>
       </table>
-      <div style="color:#789;font-size:11px;margin-top:10px">출처: BluePin 해양관측(국립해양조사원·기상청 해양부이·수산과학원) · 30분 주기 갱신</div>
+      <div style="color:#789;font-size:11px;margin-top:10px">출처: <a href="https://bluepin.ai" target="_blank" rel="noopener noreferrer" style="color:#8ab">BluePin</a> 해양관측(국립해양조사원·기상청 해양부이·수산과학원) · 30분 주기 갱신</div>
     `);
   }
 }

@@ -36,6 +36,16 @@ function readPublishableKey(): string | undefined {
 
 const PUBLISHABLE_KEY = readPublishableKey();
 
+/**
+ * Whether Clerk auth is configured at all. When no publishable key is set
+ * (the KCG self-hosted deployment), the SDK never loads and `subscribeClerk`
+ * callbacks never fire — consumers that wait for an auth signal (e.g.
+ * auth-state's `isPending`) must settle immediately instead.
+ */
+export function isClerkEnabled(): boolean {
+  return Boolean(PUBLISHABLE_KEY);
+}
+
 let clerkInstance: ClerkInstance | null = null;
 let loadPromise: Promise<void> | null = null;
 let loadScheduled = false;

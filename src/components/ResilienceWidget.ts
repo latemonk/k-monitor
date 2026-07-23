@@ -16,6 +16,7 @@ import {
   getResilienceOverallDisplay,
   getImputationClassIcon,
   getImputationClassLabel,
+  getDimensionStatusLabel,
   getResilienceDomainLabel,
   getResilienceTrendArrow,
   getResilienceVisualLevel,
@@ -121,7 +122,7 @@ export class ResilienceWidget {
       if (requestVersion !== this.requestVersion) return;
       this.loading = false;
       this.currentData = null;
-      this.errorMessage = error instanceof Error ? error.message : 'Unable to load resilience score.';
+      this.errorMessage = error instanceof Error ? error.message : '회복탄력성 점수를 불러오지 못했어요.';
       this.render();
     }
   }
@@ -150,13 +151,13 @@ export class ResilienceWidget {
       h(
         'div',
         { className: 'resilience-widget__header' },
-        h('h3', { className: 'cdp-card-title resilience-widget__title' }, 'Resilience Score'),
+        h('h3', { className: 'cdp-card-title resilience-widget__title' }, '회복탄력성 점수'),
         h(
           'span',
           {
             className: 'resilience-widget__help',
             title: METHODOLOGY_HELP_TITLE,
-            'aria-label': 'Resilience score methodology',
+            'aria-label': '회복탄력성 점수 산정 방식',
           },
           '?',
         ),
@@ -167,11 +168,11 @@ export class ResilienceWidget {
 
   private renderBody(gateReason: PanelGateReason): HTMLElement {
     if (!this.currentCountryCode) {
-      return h('div', { className: 'cdp-card-body' }, this.makeEmpty('Resilience data loads when a country is selected.'));
+      return h('div', { className: 'cdp-card-body' }, this.makeEmpty('국가를 선택하면 회복탄력성 데이터를 불러와요.'));
     }
 
     if (this.authState.isPending) {
-      return h('div', { className: 'cdp-card-body' }, this.makeLoading('Checking access…'));
+      return h('div', { className: 'cdp-card-body' }, this.makeLoading('접근 권한을 확인하는 중…'));
     }
 
     if (gateReason !== PanelGateReason.NONE) {
@@ -179,7 +180,7 @@ export class ResilienceWidget {
     }
 
     if (this.loading) {
-      return h('div', { className: 'cdp-card-body' }, this.makeLoading('Loading resilience score…'));
+      return h('div', { className: 'cdp-card-body' }, this.makeLoading('회복탄력성 점수를 불러오는 중…'));
     }
 
     if (this.errorMessage) {
@@ -187,7 +188,7 @@ export class ResilienceWidget {
     }
 
     if (!this.currentData) {
-      return h('div', { className: 'cdp-card-body' }, this.makeEmpty('Resilience score unavailable.'));
+      return h('div', { className: 'cdp-card-body' }, this.makeEmpty('회복탄력성 점수를 불러올 수 없어요.'));
     }
 
     return this.renderScoreCard(this.currentData);
@@ -250,7 +251,7 @@ export class ResilienceWidget {
           className: 'cdp-action-btn resilience-widget__retry',
           onclick: () => void this.refresh(),
         },
-        'Retry',
+        '다시 시도',
       ),
     );
   }
@@ -289,7 +290,7 @@ export class ResilienceWidget {
               overallDisplay.visualLevelLabel,
             ),
             ...(overallDisplay.hasScore
-              ? [h('span', { className: 'resilience-widget__overall-trend' }, `${getResilienceTrendArrow(data.trend)} ${data.trend}`)]
+              ? [h('span', { className: 'resilience-widget__overall-trend' }, `${getResilienceTrendArrow(data.trend)} ${data.trend === 'rising' ? '상승' : data.trend === 'falling' ? '하락' : '유지'}`)]
               : []),
           ),
         ),
@@ -321,7 +322,7 @@ export class ResilienceWidget {
           'span',
           {
             className: `resilience-widget__confidence${data.lowConfidence ? ' resilience-widget__confidence--low' : ''}`,
-            title: preview ? 'Preview only' : 'Coverage and imputation-based confidence signal.',
+            title: preview ? '미리보기예요' : '데이터 커버리지와 대체값 비중으로 계산한 신뢰도 신호예요.',
           },
           formatResilienceConfidence(data),
         ),
@@ -337,7 +338,7 @@ export class ResilienceWidget {
                 'span',
                 {
                   className: 'resilience-widget__data-version',
-                  title: 'Date the static-seed bundle (Railway job) was last refreshed. Individual live inputs (conflict events, sanctions, prices) can be newer — see the per-dimension freshness badge for those.',
+                  title: '정적 시드 데이터를 마지막으로 갱신한 날짜예요. 실시간 입력(분쟁 이벤트·제재·가격 등)은 이보다 최신일 수 있어요 — 지표별 신선도 배지를 참고하세요.',
                 },
                 dataVersionLabel,
               )]
@@ -353,7 +354,7 @@ export class ResilienceWidget {
       'div',
       {
         className: 'resilience-widget__dimension-grid',
-        title: 'Per-dimension data coverage. Hover a cell for the coverage percentage and observation provenance.',
+        title: '지표별 데이터 커버리지예요. 셀에 마우스를 올리면 커버리지 비율과 관측 출처를 볼 수 있어요.',
       },
       ...dimensions.map((dim) => this.renderDimensionConfidenceCell(dim)),
     );
@@ -366,7 +367,7 @@ export class ResilienceWidget {
     // and may both be null (observed + unknown cadence), in which case
     // only the base coverage string is shown.
     const titleParts: string[] = [
-      dim.absent ? `${dim.label}: no data` : `${dim.label}: ${dim.coveragePct}% coverage, ${dim.status}`,
+      dim.absent ? `${dim.label}: 데이터 없음` : `${dim.label}: 커버리지 ${dim.coveragePct}%, ${getDimensionStatusLabel(dim.status)}`,
     ];
     if (dim.imputationClass) titleParts.push(getImputationClassLabel(dim.imputationClass));
     if (dim.staleness) titleParts.push(getStalenessLabel(dim.staleness));
@@ -402,7 +403,7 @@ export class ResilienceWidget {
         },
         dim.imputationClass ? getImputationClassIcon(dim.imputationClass) : '',
       ),
-      h('span', { className: 'resilience-widget__dimension-pct' }, dim.absent ? 'n/a' : `${dim.coveragePct}%`),
+      h('span', { className: 'resilience-widget__dimension-pct' }, dim.absent ? '—' : `${dim.coveragePct}%`),
       h(
         'span',
         {
@@ -423,12 +424,12 @@ export class ResilienceWidget {
     if (!preview && domain.id === 'energy' && this.energyMixData?.mixAvailable) {
       const d = this.energyMixData;
       const parts = [
-        `Import dep: ${d.importShare.toFixed(1)}%`,
-        `Gas: ${d.gasShare.toFixed(1)}%`,
-        `Coal: ${d.coalShare.toFixed(1)}%`,
-        `Renew: ${d.renewShare.toFixed(1)}%`,
+        `수입 의존 ${d.importShare.toFixed(1)}%`,
+        `가스 ${d.gasShare.toFixed(1)}%`,
+        `석탄 ${d.coalShare.toFixed(1)}%`,
+        `재생에너지 ${d.renewShare.toFixed(1)}%`,
       ];
-      if (d.gasStorageAvailable) parts.push(`EU storage: ${d.gasStorageFillPct.toFixed(1)}%`);
+      if (d.gasStorageAvailable) parts.push(`EU 저장고 ${d.gasStorageFillPct.toFixed(1)}%`);
       attrs['title'] = parts.join(' | ');
     }
 

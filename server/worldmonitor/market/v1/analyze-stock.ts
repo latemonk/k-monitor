@@ -1188,7 +1188,7 @@ async function buildAiOverlay(
     maxTokens: 500,
     timeoutMs: 20_000,
     stage: 'analyze-stock',
-    providerOrder: ['openrouter', 'generic'],
+    providerOrder: ['bizrouter', 'openrouter', 'generic'],
     validate: (content) => {
       try {
         const parsed = JSON.parse(content) as Record<string, unknown>;

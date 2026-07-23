@@ -182,12 +182,33 @@ export const RESILIENCE_PILLAR_IDS = [
 ] as const;
 
 const DOMAIN_LABELS: Record<string, string> = {
-  economic: 'Economic',
-  infrastructure: 'Infra & Supply',
-  energy: 'Energy',
-  'social-governance': 'Social & Gov',
-  'health-food': 'Health & Food',
-  recovery: 'Recovery',
+  economic: '경제',
+  infrastructure: '인프라·공급망',
+  energy: '에너지',
+  'social-governance': '사회·거버넌스',
+  'health-food': '보건·식량',
+  recovery: '회복 여력',
+};
+
+const VISUAL_LEVEL_LABELS: Record<ResilienceVisualLevel, string> = {
+  very_high: '매우 높음',
+  high: '높음',
+  moderate: '보통',
+  low: '낮음',
+  very_low: '매우 낮음',
+  unknown: '데이터 부족',
+};
+
+// Server `level` enum values → Korean. Fallback keeps the raw (normalized)
+// value visible so an unexpected server enum is still debuggable.
+const SERVER_LEVEL_LABELS: Record<string, string> = {
+  'very high': '매우 높음',
+  high: '높음',
+  medium: '보통',
+  moderate: '보통',
+  low: '낮음',
+  'very low': '매우 낮음',
+  unknown: '알 수 없음',
 };
 
 export function getResilienceVisualLevel(score: number): ResilienceVisualLevel {
@@ -200,13 +221,13 @@ export function getResilienceVisualLevel(score: number): ResilienceVisualLevel {
 }
 
 export function formatResilienceVisualLevel(level: ResilienceVisualLevel): string {
-  if (level === 'unknown') return 'Insufficient data';
-  return level.replace(/_/g, ' ');
+  return VISUAL_LEVEL_LABELS[level];
 }
 
 export function formatResilienceServerLevel(level: string | null | undefined): string {
-  const normalized = String(level || '').trim().toLowerCase();
-  return normalized.length > 0 ? normalized.replace(/_/g, ' ') : 'unknown';
+  const normalized = String(level || '').trim().toLowerCase().replace(/_/g, ' ');
+  if (normalized.length === 0) return SERVER_LEVEL_LABELS['unknown']!;
+  return SERVER_LEVEL_LABELS[normalized] ?? normalized;
 }
 
 function hasAuthoritativeResilienceServerLevel(level: string | null | undefined): boolean {
@@ -247,10 +268,10 @@ export function getResilienceOverallDisplay(data: Pick<ResilienceScoreResponse, 
     return {
       hasScore: false,
       scoreForBar: 0,
-      scoreLabel: 'n/a',
+      scoreLabel: '—',
       visualLevel: 'unknown',
-      visualLevelLabel: 'Insufficient data',
-      serverLevelLabel: `API level: ${formatResilienceServerLevel(data.level)}`,
+      visualLevelLabel: '데이터 부족',
+      serverLevelLabel: `API 등급: ${formatResilienceServerLevel(data.level)}`,
     };
   }
 
@@ -260,8 +281,8 @@ export function getResilienceOverallDisplay(data: Pick<ResilienceScoreResponse, 
     scoreForBar: clampedScore,
     scoreLabel: formatScoredResilienceOverallLabel(clampedScore),
     visualLevel,
-    visualLevelLabel: `Visual band: ${formatResilienceVisualLevel(visualLevel).toUpperCase()}`,
-    serverLevelLabel: `API level: ${formatResilienceServerLevel(data.level)}`,
+    visualLevelLabel: formatResilienceVisualLevel(visualLevel),
+    serverLevelLabel: `API 등급: ${formatResilienceServerLevel(data.level)}`,
   };
 }
 
@@ -292,7 +313,7 @@ export function getResilienceMethodologySummary(data: ResilienceScoreResponse = 
 
 export function formatResilienceMethodologyHelpTitle(summary = getResilienceMethodologySummary()): string {
   // Keep the human-readable domain/pillar labels in sync if the methodology count parity tests change.
-  return `Composite resilience score from ${summary.activeDimensionCount} active dimensions across ${summary.domainCount} domains (economic, infrastructure, energy, social & governance, health & food, recovery). The current methodology groups scores into ${summary.pillarCount} pillars (structural readiness, live shock exposure, recovery capacity); pillar detail appears when the API response includes it. Weights sum to 1.00; recovery carries the largest single-domain weight (0.25).`;
+  return `${summary.domainCount}개 영역(경제·인프라·에너지·사회/거버넌스·보건/식량·회복)의 활성 지표 ${summary.activeDimensionCount}개를 종합해 산출한 회복탄력성 점수예요. 현재 방법론은 점수를 ${summary.pillarCount}개 축(구조적 대비·실시간 충격 노출·회복 역량)으로 묶고, API 응답에 포함되면 축별 상세도 표시해요. 가중치 합은 1.00이고, 회복 영역이 단일 영역 중 가장 큰 가중치(0.25)를 가져요.`;
 }
 
 export function getResilienceTrendArrow(trend: string): string {
@@ -317,8 +338,8 @@ export function formatResilienceConfidence(data: ResilienceScoreResponse): strin
   // low-confidence; the lowConfidence label is more specific
   // (sparse-data) and more actionable (will fix when more data
   // arrives) so it wins the badge.
-  if (data.lowConfidence) return 'Low confidence — sparse data';
-  if (data.headlineEligible === false) return 'Outside headline ranking';
+  if (data.lowConfidence) return '신뢰도 낮음 — 데이터 부족';
+  if (data.headlineEligible === false) return '순위 집계 대상 아님';
   // Exclude RETIRED dimensions (fuelStockDays, post-PR-3) AND
   // not-applicable-when-zero-coverage dimensions (sovereignFiscalBuffer
   // for non-SWF countries, plan 2026-04-26-001 §U3) from the displayed
@@ -354,7 +375,7 @@ export function formatResilienceConfidence(data: ResilienceScoreResponse): strin
   const avgCoverage = coverages.length > 0
     ? Math.round((coverages.reduce((s, c) => s + c, 0) / coverages.length) * 100)
     : 0;
-  return `Coverage ${avgCoverage}% ✓`;
+  return `커버리지 ${avgCoverage}% ✓`;
 }
 
 function confidenceCoverage(dimension: ResilienceScoreResponse['domains'][number]['dimensions'][number]): number {
@@ -369,13 +390,13 @@ function confidenceCoverage(dimension: ResilienceScoreResponse['domains'][number
 export function formatResilienceChange30d(change30d: number): string {
   const rounded = Number.isFinite(change30d) ? change30d.toFixed(1) : '0.0';
   const sign = change30d > 0 ? '+' : '';
-  return `30d ${sign}${rounded}`;
+  return `30일 ${sign}${rounded}`;
 }
 
 export function formatBaselineStress(baseline: number, stress: number): string {
   const b = Number.isFinite(baseline) ? Math.round(baseline) : 0;
   const s = Number.isFinite(stress) ? Math.round(stress) : 0;
-  return `Baseline: ${b} | Stress: ${s}`;
+  return `기본 ${b} | 스트레스 ${s}`;
 }
 
 type ScoreIntervalDisplayInput = ResilienceScoreResponse['scoreInterval'] | null | undefined;
@@ -398,7 +419,7 @@ export function formatResilienceScoreInterval(interval: ScoreIntervalDisplayInpu
   if (!normalized) return null;
   return {
     label: `[${Math.round(normalized.p05)}\u2013${Math.round(normalized.p95)}]`,
-    title: `95% score sensitivity band: ${normalized.p05} - ${normalized.p95}`,
+    title: `95% \uc810\uc218 \ubbfc\uac10\ub3c4 \uad6c\uac04: ${normalized.p05} ~ ${normalized.p95}`,
   };
 }
 
@@ -423,7 +444,7 @@ export function formatResilienceDataVersion(dataVersion: string | null | undefin
   const parsed = new Date(dataVersion);
   if (Number.isNaN(parsed.getTime())) return '';
   if (parsed.toISOString().slice(0, 10) !== dataVersion) return '';
-  return `Seed date ${dataVersion}`;
+  return `시드 ${dataVersion}`;
 }
 
 // T1.6 Phase 1 of the country-resilience reference-grade upgrade plan.
@@ -442,35 +463,34 @@ export function formatResilienceDataVersion(dataVersion: string | null | undefin
 // linter test (resilience-methodology-lint.test.mts) already pins the
 // scorer side, so any new dimension must land in both places together.
 const DIMENSION_LABELS: Record<string, string> = {
-  macroFiscal: 'Macro',
-  currencyExternal: 'Currency',
-  tradePolicy: 'Trade',
-  financialSystemExposure: 'Fin. Exposure',
-  cyberDigital: 'Cyber',
-  logisticsSupply: 'Logistics',
-  infrastructure: 'Infra',
-  energy: 'Energy',
-  governanceInstitutional: 'Gov',
-  socialCohesion: 'Social',
+  macroFiscal: '거시',
+  currencyExternal: '통화',
+  tradePolicy: '무역',
+  financialSystemExposure: '금융',
+  cyberDigital: '사이버',
+  logisticsSupply: '물류',
+  infrastructure: '인프라',
+  energy: '에너지',
+  governanceInstitutional: '거버넌스',
+  socialCohesion: '사회',
   // #3737 — internal id is `borderSecurity` for proto/cache stability,
   // but the dimension measures UCDP armed conflict events + UNHCR
   // displacement, not border infrastructure. Surface the truthful label.
-  borderSecurity: 'Conflict',
-  informationCognitive: 'Info',
-  healthPublicService: 'Health',
-  foodWater: 'Food',
-  fiscalSpace: 'Fiscal',
-  reserveAdequacy: 'Reserves',
-  externalDebtCoverage: 'Ext Debt',
-  importConcentration: 'Imports',
-  stateContinuity: 'Continuity',
-  fuelStockDays: 'Fuel',
+  borderSecurity: '분쟁',
+  informationCognitive: '정보',
+  healthPublicService: '보건',
+  foodWater: '식량',
+  fiscalSpace: '재정',
+  reserveAdequacy: '외환보유',
+  externalDebtCoverage: '대외부채',
+  importConcentration: '수입집중',
+  stateContinuity: '연속성',
+  fuelStockDays: '연료',
   // PR 2 §3.4 — new active dimensions. Labels chosen to stay short
   // enough for the 20-active/22-serialized-cell confidence grid
-  // without leaking the internal ID. "Reserves" is already taken by the retired
-  // reserveAdequacy so the replacement disambiguates with "Liquid".
-  liquidReserveAdequacy: 'Liquid Reserves',
-  sovereignFiscalBuffer: 'Sovereign Wealth',
+  // without leaking the internal ID.
+  liquidReserveAdequacy: '유동성',
+  sovereignFiscalBuffer: '국부펀드',
 };
 
 export function getResilienceDimensionLabel(dimensionId: string): string {
@@ -556,10 +576,10 @@ function normalizeLastObservedAtMs(value: string | number | undefined): number |
 }
 
 const IMPUTATION_CLASS_LABELS: Record<Exclude<DimensionImputationClass, null>, string> = {
-  'stable-absence': 'Stable absence: country is not in source because the phenomenon is not happening',
-  unmonitored: 'Unmonitored: source is curated and absence is ambiguous',
-  'source-failure': 'Source down: upstream seeder failed',
-  'not-applicable': 'Not applicable: structurally N/A for this country',
+  'stable-absence': '안정적 부재: 해당 현상이 없어 원천 데이터에 안 나타나요',
+  unmonitored: '미관측: 원천이 선별 수집이라 부재의 의미가 불명확해요',
+  'source-failure': '원천 장애: 업스트림 수집이 실패했어요',
+  'not-applicable': '해당 없음: 이 국가에는 구조적으로 적용되지 않아요',
 };
 
 const IMPUTATION_CLASS_ICONS: Record<Exclude<DimensionImputationClass, null>, string> = {
@@ -570,9 +590,9 @@ const IMPUTATION_CLASS_ICONS: Record<Exclude<DimensionImputationClass, null>, st
 };
 
 const STALENESS_LABELS: Record<Exclude<DimensionStaleness, null>, string> = {
-  fresh: 'Fresh (within 1.5x cadence)',
-  aging: 'Aging (1.5 to 3x cadence)',
-  stale: 'Stale (beyond 3x cadence)',
+  fresh: '최신(갱신 주기 1.5배 이내)',
+  aging: '오래됨(갱신 주기 1.5~3배)',
+  stale: '한참 지남(갱신 주기 3배 초과)',
 };
 
 const STALENESS_ICONS: Record<Exclude<DimensionStaleness, null>, string> = {
@@ -582,7 +602,7 @@ const STALENESS_ICONS: Record<Exclude<DimensionStaleness, null>, string> = {
 };
 
 export function getImputationClassLabel(c: DimensionImputationClass): string {
-  if (!c) return 'Unknown imputation class';
+  if (!c) return '대체값 분류 미상';
   return IMPUTATION_CLASS_LABELS[c];
 }
 
@@ -592,8 +612,22 @@ export function getImputationClassIcon(c: DimensionImputationClass): string {
 }
 
 export function getStalenessLabel(s: DimensionStaleness): string {
-  if (!s) return 'Unknown freshness';
+  if (!s) return '신선도 미상';
   return STALENESS_LABELS[s];
+}
+
+// User-facing labels for the per-dimension coverage status buckets
+// (see formatDimensionConfidence below).
+const DIMENSION_STATUS_LABELS: Record<DimensionCoverageStatus, string> = {
+  observed: '실측',
+  partial: '부분 실측',
+  imputed: '대체값',
+  absent: '데이터 없음',
+  'not-applicable': '해당 없음',
+};
+
+export function getDimensionStatusLabel(status: DimensionCoverageStatus): string {
+  return DIMENSION_STATUS_LABELS[status];
 }
 
 export function getStalenessIcon(s: DimensionStaleness): string {

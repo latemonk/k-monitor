@@ -1,6 +1,11 @@
 // api/kcg-sea.js
+// Marine weather / sea-surface-temperature zones, powered by the BluePin
+// marine observation & forecast API (https://bluepin.ai — KHOA, KMA marine
+// buoys, NIFS). The default public preview endpoint needs no key; set
+// BLUEPIN_API_URL / BLUEPIN_API_KEY to use a dedicated BluePin API plan.
 var config = { runtime: "edge" };
-var UPSTREAM = "https://aquacast.onpod.ai/api/map/risk";
+var UPSTREAM = (typeof process !== "undefined" && process.env && process.env.BLUEPIN_API_URL) || "https://bluepin.ai/api/map/risk";
+var BLUEPIN_API_KEY = (typeof process !== "undefined" && process.env && process.env.BLUEPIN_API_KEY) || "";
 var CACHE_TTL_MS = 10 * 60 * 1e3;
 var ZONES = [
   { id: "kr_west_incheon", nameKo: "\uC11C\uD574 \uC911\uBD80(\uC778\uCC9C)", provinces: ["\uC778\uCC9C", "\uACBD\uAE30"], lat: 37.3, lon: 125.6 },
@@ -17,8 +22,10 @@ function dist2(a, b) {
   return dLat * dLat + dLon * dLon;
 }
 async function fetchHazard(hazard) {
+  const headers = { Accept: "application/json" };
+  if (BLUEPIN_API_KEY) headers["X-API-Key"] = BLUEPIN_API_KEY;
   const resp = await fetch(`${UPSTREAM}?hazard=${hazard}`, {
-    headers: { Accept: "application/json" },
+    headers,
     signal: AbortSignal.timeout(12e3)
   });
   if (!resp.ok) return null;

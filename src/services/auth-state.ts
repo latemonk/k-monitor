@@ -1,5 +1,5 @@
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
-import { getCurrentClerkUser, scheduleClerkLoad, subscribeClerk } from './clerk';
+import { getCurrentClerkUser, isClerkEnabled, scheduleClerkLoad, subscribeClerk } from './clerk';
 
 /** Minimal user profile exposed to UI components. */
 export interface AuthUser {
@@ -16,7 +16,12 @@ export interface AuthSession {
   isPending: boolean;
 }
 
-let _currentSession: AuthSession = { user: null, isPending: true };
+// When Clerk is not configured (no publishable key — the KCG self-hosted
+// deployment), the SDK never loads and no subscriber callback ever fires,
+// so a `true` initial isPending would never settle and every auth-gated
+// widget would sit on its "checking access" state forever. Settle to a
+// signed-out session immediately in that case.
+let _currentSession: AuthSession = { user: null, isPending: isClerkEnabled() };
 
 function snapshotSession(): AuthSession {
   const cu = getCurrentClerkUser();

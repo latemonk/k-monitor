@@ -31,7 +31,7 @@ export interface ProviderCredentials {
   extraBody?: Record<string, unknown>;
 }
 
-export type LlmProviderName = 'ollama' | 'groq' | 'openrouter' | 'generic';
+export type LlmProviderName = 'ollama' | 'groq' | 'bizrouter' | 'openrouter' | 'generic';
 
 export interface ProviderCredentialOverrides {
   model?: string;
@@ -93,6 +93,22 @@ export function getProviderCredentials(
     return {
       apiUrl: 'https://api.groq.com/openai/v1/chat/completions',
       model: overrides.model || 'llama-3.3-70b-versatile',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    };
+  }
+
+  // BizRouter (https://bizrouter.ai) — Korean LLM gateway with smart
+  // model routing. OpenAI-compatible; the default `route` model picks the
+  // best-value model per request automatically.
+  if (provider === 'bizrouter') {
+    const apiKey = process.env.BIZROUTER_API_KEY;
+    if (!apiKey) return null;
+    return {
+      apiUrl: 'https://api.bizrouter.ai/v1/chat/completions',
+      model: overrides.model || process.env.BIZROUTER_MODEL || 'route',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -188,11 +204,12 @@ export function stripThinkingTags(text: string): string {
 }
 
 
-// openrouter ahead of groq since #4944: core surfaces run DeepSeek V4 Flash
-// via OpenRouter; groq (llama-3.3-70b-versatile) is the free-tier/outage
-// fallback. Ollama stays first so self-hosted deployments are untouched —
-// it is skipped in cloud where OLLAMA_API_URL is unset.
-const PROVIDER_CHAIN = ['ollama', 'openrouter', 'groq', 'generic'] as const;
+// KCG fork: bizrouter (Korean LLM gateway, smart model routing) leads the
+// hosted chain — set BIZROUTER_API_KEY and every AI surface routes through
+// it. openrouter ahead of groq since #4944 (upstream heritage); groq is the
+// free-tier/outage fallback. Ollama stays first so self-hosted deployments
+// are untouched — each provider is skipped when its env keys are unset.
+const PROVIDER_CHAIN = ['ollama', 'bizrouter', 'openrouter', 'groq', 'generic'] as const;
 const PROVIDER_SET = new Set<string>(PROVIDER_CHAIN);
 
 export interface LlmCallOptions {
@@ -322,7 +339,7 @@ export const callLlmTool = (opts: Omit<LlmCallOptions, 'providerOrder' | 'modelO
  * budget on hidden reasoning tokens and return empty content (#4983).
  */
 export const callLlmReasoning = (opts: Omit<LlmCallOptions, 'providerOrder' | 'modelOverrides'>) =>
-  callLlmProfile({ enableReasoning: true, ...opts }, 'LLM_REASONING_PROVIDER', 'LLM_REASONING_MODEL', 'openrouter');
+  callLlmProfile({ enableReasoning: true, ...opts }, 'LLM_REASONING_PROVIDER', 'LLM_REASONING_MODEL', 'bizrouter');
 
 // enableReasoning is omitted too: the reasoning stream hardcodes it on —
 // exposing the knob on the stream type would be a silent no-op for callers.
@@ -340,7 +357,7 @@ export type LlmStreamOptions = Omit<LlmCallOptions, 'stripThinkingTags' | 'valid
  */
 export function callLlmReasoningStream(opts: LlmStreamOptions): ReadableStream<Uint8Array> {
   const envProvider = process.env.LLM_REASONING_PROVIDER;
-  const provider = (envProvider && PROVIDER_SET.has(envProvider) ? envProvider : 'openrouter') as LlmProviderName;
+  const provider = (envProvider && PROVIDER_SET.has(envProvider) ? envProvider : 'bizrouter') as LlmProviderName;
   const model = process.env.LLM_REASONING_MODEL;
   const remaining = PROVIDER_CHAIN.filter((p) => p !== provider);
   const providerOrder = [provider, ...remaining];
