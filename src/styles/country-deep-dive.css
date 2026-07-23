@@ -975,11 +975,26 @@
   justify-content: center;
   border-radius: 999px;
   border: 1px solid var(--border);
+  background: transparent;
+  padding: 0;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1;
-  cursor: help;
+  cursor: pointer;
   flex-shrink: 0;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.resilience-widget__help:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* body 포털 커스텀 툴팁 — 산정 방식 설명이 길어서 폭을 넉넉히 */
+.resilience-widget__help-tooltip {
+  max-width: 340px;
+  white-space: normal;
+  word-break: keep-all;
 }
 
 .resilience-widget__body,

@@ -10,6 +10,7 @@ import {
   RESILIENCE_STATIC_META_KEY,
   RESILIENCE_STATIC_SOURCE_VERSION,
   WGI_INDICATORS,
+  wgiApiIndicatorId,
   buildFailureRefreshKeys,
   buildFaoAggregate,
   buildFaoAggregateForPublish,
@@ -86,6 +87,14 @@ describe('resilience static seed country normalization', () => {
 describe('resilience static seed WGI indicator contract', () => {
   it('fetchWgiDataset uses the canonical shared WGI key list', () => {
     assert.deepEqual(WGI_INDICATORS, wgiIndicatorKeys);
+  });
+
+  it('maps legacy WGI ids to the 2026 GOV_WGI_ API ids while keeping payload keys legacy', () => {
+    // 2026-07 World Bank 개편: VA.EST 등은 기본 DB에서 archived — source=3
+    // 의 GOV_WGI_ 접두 id 로만 조회된다. 페이로드 키는 레거시 유지가 계약.
+    for (const key of WGI_INDICATORS) {
+      assert.equal(wgiApiIndicatorId(key), `GOV_WGI_${key}`);
+    }
   });
 });
 
