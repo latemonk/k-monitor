@@ -42,6 +42,10 @@ const REPORTERS = [
   { code: '156', name: 'China' },
   { code: '699', name: 'India' },
   { code: '490', name: 'Taiwan' },
+  // KCG fork(07-23): 한국 우선 콘솔 — 국가 패널 「무역 흐름」 카드가
+  // KR/JP 에서 upstreamUnavailable 로 비어 있던 원인이 리포터 누락.
+  { code: '410', name: 'South Korea' },
+  { code: '392', name: 'Japan' },
   { code: '643', name: 'Russia', required: false },
   { code: '364', name: 'Iran', required: false },
 ];

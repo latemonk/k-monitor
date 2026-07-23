@@ -75,11 +75,14 @@ test('fetchFlows uses the stable HS preview route while product metadata tracks 
 });
 
 // --- Defect 2: structurally-absent reporters must not block publish ---
+// KCG fork(07-23): KR·JP 리포터 추가에 맞춰 픽스처 동기(모듈 REPORTERS 미러).
 const REQUIRED_FOUR = [
   { code: '842', name: 'USA' },
   { code: '156', name: 'China' },
   { code: '699', name: 'India' },
   { code: '490', name: 'Taiwan' },
+  { code: '410', name: 'South Korea' },
+  { code: '392', name: 'Japan' },
 ];
 const BEST_EFFORT = [
   { code: '643', name: 'Russia', required: false },

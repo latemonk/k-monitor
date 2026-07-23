@@ -80,29 +80,46 @@ export async function getCountryFacts(
   };
 }
 
-async function fetchRestCountries(code: string): Promise<RestCountryData | null> {
+// KCG fork(07-23): restcountries.com 은 v1~v4 를 폐기하고 v5 를 API 키
+// 필수(Bearer)로 전환 — 기존 v3.1 호출은 200 + {success:false} 봉투를
+// 돌려줘서 국가 개요 카드가 조용히 비어 있었다. 같은 스키마의 무키
+// 대체 소스 2종으로 교체:
+//   - world-countries(npm, jsDelivr CDN) 정적 JSON — 이름·수도·언어·통화·
+//     면적 (restcountries 가 쓰던 mledoze/countries 원본 데이터)
+//   - World Bank SP.POP.TOTL(mrv=1) — 인구
+// RestCountryData 반환 형태는 그대로 유지해 아래 소비부는 무변경.
+const WORLD_COUNTRIES_URL = 'https://cdn.jsdelivr.net/npm/world-countries@5.1.0/countries.json';
+const WORLD_COUNTRIES_CACHE_KEY = 'intel:country-facts:world-countries:v1';
+const WORLD_COUNTRIES_TTL = 30 * 86400; // 정적 패키지 — 사실상 불변
+
+interface WorldCountryEntry {
+  cca2?: string;
+  name?: { common?: string };
+  capital?: string[];
+  languages?: Record<string, string>;
+  currencies?: Record<string, { name?: string }>;
+  area?: number;
+}
+
+async function fetchWorldCountriesIndex(): Promise<Record<string, WorldCountryEntry> | null> {
   try {
-    return await cachedFetchJson<RestCountryData>(
-      `intel:country-facts:rc:${code}`,
-      FACTS_TTL,
+    return await cachedFetchJson<Record<string, WorldCountryEntry>>(
+      WORLD_COUNTRIES_CACHE_KEY,
+      WORLD_COUNTRIES_TTL,
       async () => {
         try {
-          const resp = await fetch(`https://restcountries.com/v3.1/alpha/${code}`, {
+          const resp = await fetch(WORLD_COUNTRIES_URL, {
             headers: { 'User-Agent': CHROME_UA },
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
           });
           if (!resp.ok) return null;
-          const data = await resp.json();
-          const entry = Array.isArray(data) ? data[0] : data;
-          if (!entry) return null;
-          return {
-            name: entry.name,
-            population: entry.population,
-            capital: entry.capital,
-            languages: entry.languages,
-            currencies: entry.currencies,
-            area: entry.area,
-          } as RestCountryData;
+          const data = (await resp.json()) as WorldCountryEntry[];
+          if (!Array.isArray(data) || data.length === 0) return null;
+          const byCode: Record<string, WorldCountryEntry> = {};
+          for (const entry of data) {
+            if (entry?.cca2) byCode[entry.cca2.toUpperCase()] = entry;
+          }
+          return byCode;
         } catch {
           return null;
         }
@@ -112,6 +129,50 @@ async function fetchRestCountries(code: string): Promise<RestCountryData | null>
   } catch {
     return null;
   }
+}
+
+async function fetchWorldBankPopulation(code: string): Promise<number> {
+  try {
+    const result = await cachedFetchJson<{ population: number }>(
+      `intel:country-facts:population:${code}`,
+      FACTS_TTL,
+      async () => {
+        try {
+          const resp = await fetch(
+            `https://api.worldbank.org/v2/country/${encodeURIComponent(code)}/indicator/SP.POP.TOTL?format=json&mrv=1`,
+            { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT) },
+          );
+          if (!resp.ok) return null;
+          const data = await resp.json() as [unknown, Array<{ value?: number | null }>?];
+          const value = Number(data?.[1]?.[0]?.value ?? 0);
+          return Number.isFinite(value) && value > 0 ? { population: value } : null;
+        } catch {
+          return null;
+        }
+      },
+      NEGATIVE_TTL,
+    );
+    return result?.population ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function fetchRestCountries(code: string): Promise<RestCountryData | null> {
+  const [index, population] = await Promise.all([
+    fetchWorldCountriesIndex(),
+    fetchWorldBankPopulation(code),
+  ]);
+  const entry = index?.[code];
+  if (!entry) return null;
+  return {
+    name: entry.name,
+    population,
+    capital: entry.capital,
+    languages: entry.languages,
+    currencies: entry.currencies,
+    area: entry.area,
+  };
 }
 
 interface WikiResult {

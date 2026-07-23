@@ -31,6 +31,27 @@ while :; do
   #   - recovery 번들: 섹션별 30일 freshness 게이트 내장 → 데일리 루프 안전
   node scripts/seed-resilience-static.mjs || echo "[kcg-seeders] resilience-static failed (will retry next cycle)"
   node scripts/seed-bundle-resilience-recovery.mjs || echo "[kcg-seeders] resilience-recovery failed (will retry next cycle)"
+  # 국가 패널 카드용 시드 (07-23 전수조사 — 전부 무키 공개 API):
+  #   energy-sources 번들 = 에너지 프로필 카드(OWID 믹스·JODI·가스저장 등,
+  #     섹션별 freshness 게이트 내장 → 데일리 루프 안전)
+  #   portwatch-port-activity = 항만 활동 카드(IMF PortWatch ArcGIS)
+  node scripts/seed-bundle-energy-sources.mjs || echo "[kcg-seeders] energy-sources failed (will retry next cycle)"
+  node scripts/seed-portwatch-port-activity.mjs || echo "[kcg-seeders] portwatch-port-activity failed (will retry next cycle)"
+  #   imf-extended 번들 = 경제 지표 카드(IMF WEO 매크로·성장·고용·대외, 30일 게이트)
+  node scripts/seed-bundle-imf-extended.mjs || echo "[kcg-seeders] imf-extended failed (will retry next cycle)"
+  #   bis-extended = 주택 경기 카드(BIS DSR·주택/상업용 부동산 지수, 분기 데이터)
+  node scripts/seed-bis-extended.mjs || echo "[kcg-seeders] bis-extended failed (will retry next cycle)"
+  # bilateral-hs4 = 무역 노출도·비용 충격·주요 수입 품목의 실데이터 원천.
+  # 키 TTL 72h·시더 자체 게이트는 24일이라, 캐너리 키(KR)가 사라졌을 때만
+  # FORCE_RESEED 로 돌린다(198개국 × 3.5s ≈ 12분·Comtrade 공개 쿼터 보호).
+  if ! node -e "
+    const u=process.env.UPSTASH_REDIS_REST_URL,t=process.env.UPSTASH_REDIS_REST_TOKEN;
+    fetch(u+'/get/'+encodeURIComponent('comtrade:bilateral-hs4:KR:v1'),{headers:{Authorization:'Bearer '+t}})
+      .then(r=>r.json()).then(d=>process.exit(d.result?0:1)).catch(()=>process.exit(1));
+  "; then
+    echo "[kcg-seeders] bilateral-hs4 canary(KR) missing — reseeding"
+    FORCE_RESEED=true node scripts/seed-comtrade-bilateral-hs4.mjs || echo "[kcg-seeders] bilateral-hs4 failed (will retry next cycle)"
+  fi
   echo "[kcg-seeders] cycle done $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   sleep 86400
 done

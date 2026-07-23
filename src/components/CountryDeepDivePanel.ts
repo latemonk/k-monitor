@@ -3,6 +3,7 @@ import { getSourcePropagandaRisk, getSourceTier } from '@/config/feeds';
 import { getCountryCentroid, ME_STRIKE_BOUNDS } from '@/services/country-geometry';
 import type { CountryScore } from '@/services/country-instability';
 import { t } from '@/services/i18n';
+import { attachHelpTooltip } from '@/utils/help-tooltip';
 import { getCountryInfrastructure } from '@/services/related-assets';
 import type { PredictionMarket } from '@/services/prediction';
 import type { AssetType, NewsItem, RelatedAsset } from '@/types';
@@ -148,6 +149,8 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
   private debtBody: HTMLElement | null = null;
   private sanctionsBody: HTMLElement | null = null;
   private comtradeBody: HTMLElement | null = null;
+  /** body 포털 (?) 툴팁 cleanup 들 — 콘텐츠 재빌드/close 시 반드시 호출(누수 방지). */
+  private helpTooltipCleanups: Array<() => void> = [];
   private tariffBody: HTMLElement | null = null;
   // ── Phase 5: Multi-sector Cost Shock Calculator ─────────────────────────
   private costShockCalcBody: HTMLElement | null = null;
@@ -619,7 +622,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (!this.housingBody) return;
     this.housingBody.replaceChildren();
     if (!data || (!data.residential && !data.commercial && !data.dsr)) {
-      this.housingBody.append(this.makeEmpty('이 국가의 주택 경기 데이터가 없어요'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.housingBody.parentElement?.remove();
+      this.housingBody = null;
       return;
     }
     const grid = this.el('div', 'cdp-pro-metric-grid');
@@ -653,7 +658,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (!this.debtBody) return;
     this.debtBody.replaceChildren();
     if (!entry) {
-      this.debtBody.append(this.makeEmpty('국가 부채 데이터가 없어요'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.debtBody.parentElement?.remove();
+      this.debtBody = null;
       return;
     }
     const grid = this.el('div', 'cdp-pro-metric-grid');
@@ -670,7 +677,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (!this.sanctionsBody) return;
     this.sanctionsBody.replaceChildren();
     if (!data) {
-      this.sanctionsBody.append(this.makeEmpty('제재 데이터가 없어요'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.sanctionsBody.parentElement?.remove();
+      this.sanctionsBody = null;
       return;
     }
     const grid = this.el('div', 'cdp-pro-metric-grid');
@@ -685,7 +694,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (!this.comtradeBody) return;
     this.comtradeBody.replaceChildren();
     if (!flows || flows.length === 0) {
-      this.comtradeBody.append(this.makeEmpty('데이터가 없어요'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.comtradeBody.parentElement?.remove();
+      this.comtradeBody = null;
       return;
     }
     const table = this.el('table', 'cdp-pro-flow-table');
@@ -718,7 +729,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (!this.tariffBody) return;
     this.tariffBody.replaceChildren();
     if (!data) {
-      this.tariffBody.append(this.makeEmpty('관세 데이터가 없어요'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.tariffBody.parentElement?.remove();
+      this.tariffBody = null;
       return;
     }
     const grid = this.el('div', 'cdp-pro-metric-grid');
@@ -934,7 +947,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
       || data.emberAvailable || data.sprAvailable;
 
     if (!hasAny) {
-      this.energyBody.append(this.makeEmpty('이 국가의 에너지 데이터가 없어요.'));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.energyBody.parentElement?.remove();
+      this.energyBody = null;
       return;
     }
 
@@ -2250,8 +2265,10 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
       scoreRow.append(value, trend);
       this.scoreCard.append(scoreRow);
       this.scoreCard.append(this.renderComponentBars(score.components));
+      this.scoreCard.style.display = '';
     } else {
-      this.scoreCard.append(this.makeEmpty(t('countryBrief.ciiUnavailable')));
+      // KCG fork(07-23): CII 없으면 카드 숨김 — 위 초기 렌더와 동일 정책.
+      this.scoreCard.style.display = 'none';
     }
   }
 
@@ -2282,7 +2299,9 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     this.marketsBody.replaceChildren();
 
     if (markets.length === 0) {
-      this.marketsBody.append(this.makeEmpty(t('countryBrief.noMarkets')));
+      // KCG fork(07-23): 데이터 없으면 카드 자체를 제거(사장님 지시 — 빈 카드 금지).
+      this.marketsBody.parentElement?.remove();
+      this.marketsBody = null;
       return;
     }
 
@@ -2489,7 +2508,10 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
       scoreCard.append(scoreRow);
       scoreCard.append(this.renderComponentBars(score.components));
     } else {
-      scoreCard.append(this.makeEmpty(t('countryBrief.ciiUnavailable')));
+      // KCG fork(07-23): CII 미제공 국가는 "이용할 수 없습니다" 사과문 대신
+      // 카드 자체를 숨긴다(사장님 지시 — 넣을 게 없으면 항목 제거).
+      // 점수가 나중에 도착하면 updateScore()가 다시 보여준다.
+      scoreCard.style.display = 'none';
     }
 
     const summaryGrid = this.el('div', 'cdp-summary-grid');
@@ -2721,6 +2743,7 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     this.costShockCalcTotalLabel = null;
     this.costShockCalcPrimaryChokepoint = null;
     this.costShockCalcClosureDays = 30;
+    for (const cleanup of this.helpTooltipCleanups.splice(0)) cleanup();
     this.content.replaceChildren();
   }
 
@@ -2980,6 +3003,8 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
 
   private close(): void {
     if (!this.panel.classList.contains('active')) return;
+    // 포털된 (?) 툴팁이 패널 닫힌 뒤 지도 위에 떠 있지 않게 숨긴다.
+    document.querySelectorAll('.kcg-help-tooltip.visible').forEach((el) => el.classList.remove('visible'));
     this.panel.classList.remove('active');
     this.panel.setAttribute('aria-hidden', 'true');
     document.removeEventListener('keydown', this.handleGlobalKeydown);
@@ -3019,8 +3044,11 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     const heading = this.el('h3', 'cdp-card-title', title);
     if (helpText) {
       const tip = this.el('button', 'cdp-card-help', '?');
-      tip.setAttribute('title', helpText);
       tip.setAttribute('type', 'button');
+      tip.setAttribute('aria-label', helpText);
+      // KCG fork(07-23): native title 은 호버 지연이 길고 환경에 따라 안 떠서
+      // body-포털 커스텀 툴팁으로 교체(공용 attachHelpTooltip).
+      this.helpTooltipCleanups.push(attachHelpTooltip(tip, helpText));
       heading.append(tip);
     }
     const body = this.el('div', 'cdp-card-body');

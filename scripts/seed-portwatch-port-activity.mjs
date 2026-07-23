@@ -872,6 +872,11 @@ async function redisMgetJson(keys) {
 // so they must win cold-fetch slots ahead of cached-but-stale ones — otherwise
 // the random shuffle starves them out of the canonical (coverage frozen < 174).
 // Pure + exported for unit testing; rng is injectable for determinism. #4293.
+// KCG fork(07-23): 한국 우선 콘솔 — 국가 패널에서 실제로 열어보는 핵심
+// 국가들이 랜덤 로테이션 뒤로 밀려 최대 3일간 「항만 활동」이 비는 문제.
+// 각 그룹(무캐시/캐시) 안에서 우선 국가를 셔플 없이 맨 앞에 고정한다.
+const PRIORITY_COLD_FETCH_ISO2 = ['KR', 'JP', 'CN', 'US', 'TW', 'RU'];
+
 export function orderColdFetchQueue(needsFetch, rng = Math.random) {
   const shuffle = (arr) => {
     const a = [...arr];
@@ -881,10 +886,20 @@ export function orderColdFetchQueue(needsFetch, rng = Math.random) {
     }
     return a;
   };
+  const priorityRank = (it) => {
+    const idx = PRIORITY_COLD_FETCH_ISO2.indexOf(it?.iso2 ?? '');
+    return idx === -1 ? PRIORITY_COLD_FETCH_ISO2.length : idx;
+  };
+  const withPriorityFirst = (arr) => {
+    const priority = arr.filter((it) => priorityRank(it) < PRIORITY_COLD_FETCH_ISO2.length)
+      .sort((a, b) => priorityRank(a) - priorityRank(b));
+    const rest = shuffle(arr.filter((it) => priorityRank(it) === PRIORITY_COLD_FETCH_ISO2.length));
+    return [...priority, ...rest];
+  };
   const hasCache = (it) => Boolean(it && it.prevPayload && typeof it.prevPayload === 'object');
   const noCache = needsFetch.filter((it) => !hasCache(it));
   const cached = needsFetch.filter(hasCache);
-  return [...shuffle(noCache), ...shuffle(cached)];
+  return [...withPriorityFirst(noCache), ...withPriorityFirst(cached)];
 }
 
 // fetchAll is the orchestrator (refs → schema → preflight → cache-partition
