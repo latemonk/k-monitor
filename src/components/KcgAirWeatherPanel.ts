@@ -62,6 +62,8 @@ interface AirwxHazards {
   warnings: AirwxHazard[];
   sigmet: AirwxHazard[];
   airmet: AirwxHazard[];
+  /** 상류 플래핑으로 이번 갱신에 실패한 종류(부분 성공 표시용). */
+  failedKinds?: string[];
 }
 
 interface AirwxAmosRow {
@@ -207,7 +209,7 @@ export class KcgAirWeatherPanel extends Panel {
             return safeHtml`<button class="kaw-hazard" data-hazard="${String(i)}" style="border-color:${meta.color};color:${meta.color}">${meta.ko}${h.airport ? ` · ${h.airport}` : ''}${h.type ? ` · ${h.type}` : ''}</button>`;
           }))}
         </div>`
-      : this.hazardsFailed
+      : (this.hazardsFailed || (this.hazards?.failedKinds?.length ?? 0) > 0)
         ? safeHtml`<div class="kaw-hazard-note">특보 정보를 잠시 확인할 수 없어요</div>`
         : safeHtml`<div class="kaw-hazard-note kaw-hazard-ok">발효 중인 공항 특보 없음</div>`;
 

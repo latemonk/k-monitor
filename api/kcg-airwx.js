@@ -211,15 +211,17 @@ async function fetchKmaMetar(key) {
 // ── 특보(공항경보·SIGMET·AIRMET) — AmmService, NO_DATA(03)=발효 없음 ──────
 // ⚠API허브 openApi 는 간헐적으로 resultCode 01(APPLICATION_ERROR)을 튕긴다
 // (07-24 실측: 같은 순간 한쪽 성공·한쪽 실패 — 상류 플래핑). 짧은 재시도 필수.
+// 재시도 2회·타임아웃 4초 — 특보 3종 순차 최악까지 합쳐도 엣지 타임아웃(30초대)
+// 안에 응답하도록 예산을 짠다.
 async function fetchAmmItems(key, path, extraQs) {
   const url = "https://apihub.kma.go.kr/api/typ02/openApi/AmmService/" + path
     + "?pageNo=1&numOfRows=20&dataType=JSON" + (extraQs || "")
     + "&authKey=" + encodeURIComponent(key);
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 350));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 300));
     try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(8e3) });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(4e3) });
       if (!resp.ok) { lastErr = new Error("kma " + resp.status); continue; }
       const data = await resp.json();
       const header = data && data.response && data.response.header;
@@ -238,8 +240,18 @@ async function fetchAmmList(key, path, mapItem) {
 }
 
 async function fetchHazards(key) {
-  // 순차 3콜 — 병렬 버스트 금지.
-  const warnings = await fetchAmmList(key, "getWarning", (it) => ({
+  // 순차 3콜(병렬 버스트 금지) — 종류별 부분 실패 허용. 상류 플래핑 중에도
+  // 성공한 종류는 보여주고, 실패 종류는 failedKinds 로 표시한다.
+  const failedKinds = [];
+  const tryKind = async (kind, path, mapItem) => {
+    try {
+      return await fetchAmmList(key, path, mapItem);
+    } catch {
+      failedKinds.push(kind);
+      return [];
+    }
+  };
+  const warnings = await tryKind("warning", "getWarning", (it) => ({
     kind: "warning",
     airport: it.airportName || it.icaoCode || "",
     icao: it.icaoCode || "",
@@ -249,7 +261,7 @@ async function fetchHazards(key) {
     msg: it.wrngMsg || "",
   }));
   await new Promise((r) => setTimeout(r, 250));
-  const sigmet = await fetchAmmList(key, "getSigmet", (it) => ({
+  const sigmet = await tryKind("sigmet", "getSigmet", (it) => ({
     kind: "sigmet",
     airport: it.airportName || "",
     icao: it.icaoCode || "",
@@ -258,7 +270,7 @@ async function fetchHazards(key) {
     msg: it.sigmetMsg || "",
   }));
   await new Promise((r) => setTimeout(r, 250));
-  const airmet = await fetchAmmList(key, "getAirmet", (it) => ({
+  const airmet = await tryKind("airmet", "getAirmet", (it) => ({
     kind: "airmet",
     airport: it.airportName || "",
     icao: it.icaoCode || "",
@@ -266,7 +278,8 @@ async function fetchHazards(key) {
     to: it.edTm || "",
     msg: it.airmetMsg || "",
   }));
-  return { warnings, sigmet, airmet };
+  if (failedKinds.length === 3) throw new Error("all hazard kinds failed");
+  return { warnings, sigmet, airmet, failedKinds };
 }
 
 async function fetchTaf(key, icao) {
