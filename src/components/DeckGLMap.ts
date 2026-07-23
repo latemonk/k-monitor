@@ -757,43 +757,65 @@ export class DeckGLMap {
   };
 
   // ── KCG fork(07-24 사장님 지시): 우클릭 관심 등록 ────────────────────────
-  /** 우클릭 지점의 선박/항공기를 픽킹해 관심 등록/해제 메뉴를 띄운다. 띄웠으면 true. */
+  /**
+   * 우클릭 지점의 선박/항공기에 관심 등록/해제 메뉴를 띄운다. 띄웠으면 true.
+   * deck 의 pickObject 는 interleaved 모드에서 결과를 안 돌려주는 것을
+   * 실측(07-24 Playwright) — maplibre.project() 로 데이터 배열을 직접
+   * 히트테스트한다(항공기 아이콘 36px·선박 아이콘 고려 반경 20px).
+   */
   private showKcgAssetContextMenu(x: number, y: number, screenX: number, screenY: number): boolean {
-    let info: PickingInfo | null = null;
-    try {
-      info = this.deckOverlay?.pickObject({ x, y, radius: 10 }) ?? null;
-    } catch { return false; }
-    if (!info?.object || !info.layer) return false;
-    const rawId = info.layer.id;
-    const layerId = rawId.endsWith('-ghost') ? rawId.slice(0, -6) : rawId;
+    const map = this.maplibreMap;
+    if (!map) return false;
+    const HIT_RADIUS_PX = 20;
+    const dist2 = (lat: number, lon: number): number => {
+      const p = map.project([lon, lat]);
+      const dx = p.x - x;
+      const dy = p.y - y;
+      return dx * dx + dy * dy;
+    };
     const watch = getKcgWatchlist();
 
-    if (layerId === 'aircraft-positions-layer') {
-      const d = info.object as PositionSample;
-      const icao = (d.icao24 || '').toLowerCase();
-      if (!/^[0-9a-f]{6}$/.test(icao)) return false;
-      const label = (d.callsign || '').trim() || icao.toUpperCase();
-      showMapContextMenu(screenX, screenY, [
-        watch.isWatched('aircraft', icao)
-          ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('aircraft', icao, label) }
-          : { label: `☆ 관심 항공기 등록 — ${label}`, action: () => this.addAircraftToKcgWatch(d, screenX, screenY) },
-        { label: '실시간 추적 카드 열기', action: () => this.selectAircraft(d) },
-      ]);
-      return true;
+    // 항공기 우선(선박보다 위 레이어) — 가장 가까운 것 하나.
+    if (this.state.layers.flights && this.aircraftPositions.length) {
+      let best: PositionSample | null = null;
+      let bestD = HIT_RADIUS_PX * HIT_RADIUS_PX;
+      for (const p of this.aircraftPositions) {
+        const d2 = dist2(p.lat, p.lon);
+        if (d2 < bestD) { bestD = d2; best = p; }
+      }
+      const icao = best ? (best.icao24 || '').toLowerCase() : '';
+      if (best && /^[0-9a-f]{6}$/.test(icao)) {
+        const d = best;
+        const label = (d.callsign || '').trim() || icao.toUpperCase();
+        showMapContextMenu(screenX, screenY, [
+          watch.isWatched('aircraft', icao)
+            ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('aircraft', icao, label) }
+            : { label: `☆ 관심 항공기 등록 — ${label}`, action: () => this.addAircraftToKcgWatch(d, screenX, screenY) },
+          { label: '실시간 추적 카드 열기', action: () => this.selectAircraft(d) },
+        ]);
+        return true;
+      }
     }
 
-    if (layerId === 'live-tankers-layer') {
-      const d = info.object as KcgVesselDatum;
-      const mmsi = String(d.mmsi || '');
-      if (!mmsi) return false;
-      const label = d.name || `MMSI ${mmsi}`;
-      showMapContextMenu(screenX, screenY, [
-        watch.isWatched('vessel', mmsi)
-          ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('vessel', mmsi, label) }
-          : { label: `☆ 관심 선박 등록 — ${label}`, action: () => this.addVesselToKcgWatch(d, screenX, screenY) },
-        { label: '선박 정보 카드 열기', action: () => this.selectVessel(d) },
-      ]);
-      return true;
+    if (this.state.layers.liveTankers && this.liveTankers.length) {
+      let best: KcgVesselDatum | null = null;
+      let bestD = HIT_RADIUS_PX * HIT_RADIUS_PX;
+      for (const t of this.liveTankers) {
+        const d2 = dist2(t.lat, t.lon);
+        if (d2 < bestD) { bestD = d2; best = t; }
+      }
+      if (best?.mmsi) {
+        const d = best;
+        const mmsi = String(d.mmsi);
+        const label = d.name || `MMSI ${mmsi}`;
+        showMapContextMenu(screenX, screenY, [
+          watch.isWatched('vessel', mmsi)
+            ? { label: `★ 관심 해제 — ${label}`, action: () => this.removeFromKcgWatch('vessel', mmsi, label) }
+            : { label: `☆ 관심 선박 등록 — ${label}`, action: () => this.addVesselToKcgWatch(d, screenX, screenY) },
+          { label: '선박 정보 카드 열기', action: () => this.selectVessel(d) },
+        ]);
+        return true;
+      }
     }
     return false;
   }
