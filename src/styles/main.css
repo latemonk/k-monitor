@@ -19297,7 +19297,8 @@ a.prediction-link:hover {
 
 .critical-posture-banner {
   position: fixed;
-  top: 50px;
+  /* 헤더(40px)+하단 보더(1px)에 딱 붙인다 — breaking-news-container와 동일 기준 */
+  top: 41px;
   left: 0;
   right: 0;
   z-index: 999;
@@ -19396,7 +19397,8 @@ body.has-critical-banner .panels-grid {
 
 .breaking-news-container {
   position: fixed;
-  top: 50px;
+  /* 헤더(40px)+하단 보더(1px)에 딱 붙인다 — 50px였을 때 9px 틈이 보였음 */
+  top: 41px;
   left: 0;
   right: 0;
   z-index: 1001;

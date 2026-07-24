@@ -2,7 +2,10 @@ import type { BreakingAlert } from '@/services/breaking-news-alerts';
 import { getAlertSettings } from '@/services/breaking-news-alerts';
 import { getSourcePanelId } from '@/config/feeds';
 import { t } from '@/services/i18n';
+import { translateText } from '@/services/summarization';
 import { isMobileDevice } from '@/utils';
+
+const HANGUL_RE = /[가-힣]/;
 
 const MAX_ALERTS = 3;
 const CRITICAL_DISMISS_MS = 60_000;
@@ -30,6 +33,8 @@ export class BreakingNewsBanner {
   private boundOnResize: () => void;
   private dismissed = new Map<string, number>();
   private highlightTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+  private pendingTranslations = new Set<string>();
+  private destroyed = false;
   private readonly inFlow: boolean;
 
   constructor() {
@@ -114,7 +119,7 @@ export class BreakingNewsBanner {
       this.updateOffset();
       return;
     }
-    let top = 50;
+    let top = 41; // 헤더(40px)+보더(1px)에 밀착 — main.css .breaking-news-container와 동일 값
     if (document.body?.classList.contains('has-critical-banner')) {
       this.attachResizeObserverIfNeeded();
       const postureBanner = document.querySelector('.critical-posture-banner');
@@ -151,6 +156,30 @@ export class BreakingNewsBanner {
     const existing = this.activeAlerts.find(a => a.alert.id === alert.id);
     if (existing) return;
 
+    // KCG fork: 배너는 사용자에게 그대로 꽂히는 표면이라, 영문(비한글)
+    // 헤드라인은 한글화가 끝난 뒤에만 띄운다. 번역이 실패하면 배너는
+    // 생략한다 — 원문은 실시간 속보/뉴스 패널에 계속 노출된다.
+    if (!HANGUL_RE.test(alert.headline)) {
+      if (this.pendingTranslations.has(alert.id)) return;
+      this.pendingTranslations.add(alert.id);
+      void translateText(alert.headline, 'ko')
+        .then((translated) => {
+          const headline = translated?.trim();
+          if (!headline || !HANGUL_RE.test(headline)) return;
+          if (this.destroyed) return;
+          if (this.isDismissedRecently(alert.id)) return;
+          if (this.activeAlerts.some(a => a.alert.id === alert.id)) return;
+          this.showAlert({ ...alert, headline });
+        })
+        .catch(() => {})
+        .finally(() => this.pendingTranslations.delete(alert.id));
+      return;
+    }
+
+    this.showAlert(alert);
+  }
+
+  private showAlert(alert: BreakingAlert): void {
     if (alert.threatLevel === 'critical') {
       const highAlerts = this.activeAlerts.filter(a => a.alert.threatLevel === 'high');
       for (const h of highAlerts) {
@@ -307,6 +336,7 @@ export class BreakingNewsBanner {
   }
 
   public destroy(): void {
+    this.destroyed = true;
     document.removeEventListener('wm:breaking-news', this.boundOnAlert);
     document.removeEventListener('visibilitychange', this.boundOnVisibility);
     window.removeEventListener('resize', this.boundOnResize);
