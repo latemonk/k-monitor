@@ -11,6 +11,8 @@ const MAX_ALERTS = 3;
 const CRITICAL_DISMISS_MS = 60_000;
 const HIGH_DISMISS_MS = 30_000;
 const SOUND_COOLDOWN_MS = 5 * 60 * 1000;
+const TRANSLATE_RETRIES = 2;
+const TRANSLATE_RETRY_DELAY_MS = 30_000;
 
 interface ActiveAlert {
   alert: BreakingAlert;
@@ -157,26 +159,38 @@ export class BreakingNewsBanner {
     if (existing) return;
 
     // KCG fork: 배너는 사용자에게 그대로 꽂히는 표면이라, 영문(비한글)
-    // 헤드라인은 한글화가 끝난 뒤에만 띄운다. 번역이 실패하면 배너는
+    // 헤드라인은 한글화가 끝난 뒤에만 띄운다. 번역이 끝내 실패하면 배너는
     // 생략한다 — 원문은 실시간 속보/뉴스 패널에 계속 노출된다.
     if (!HANGUL_RE.test(alert.headline)) {
       if (this.pendingTranslations.has(alert.id)) return;
       this.pendingTranslations.add(alert.id);
-      void translateText(alert.headline, 'ko')
-        .then((translated) => {
-          const headline = translated?.trim();
-          if (!headline || !HANGUL_RE.test(headline)) return;
+      void this.translateWithRetry(alert.headline)
+        .then((headline) => {
+          if (!headline) return;
           if (this.destroyed) return;
           if (this.isDismissedRecently(alert.id)) return;
           if (this.activeAlerts.some(a => a.alert.id === alert.id)) return;
           this.showAlert({ ...alert, headline });
         })
-        .catch(() => {})
         .finally(() => this.pendingTranslations.delete(alert.id));
       return;
     }
 
     this.showAlert(alert);
+  }
+
+  // LLM 업스트림이 잠깐 플랩할 때 속보가 조용히 버려지지 않게 재시도.
+  // 정상 번역이 ~25s 걸리므로 간격은 그보다 길게 잡는다.
+  private async translateWithRetry(headline: string): Promise<string | null> {
+    for (let attempt = 0; attempt <= TRANSLATE_RETRIES; attempt++) {
+      if (this.destroyed) return null;
+      const translated = (await translateText(headline, 'ko').catch(() => null))?.trim();
+      if (translated && HANGUL_RE.test(translated)) return translated;
+      if (attempt < TRANSLATE_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, TRANSLATE_RETRY_DELAY_MS));
+      }
+    }
+    return null;
   }
 
   private showAlert(alert: BreakingAlert): void {
