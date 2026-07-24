@@ -108,10 +108,13 @@ export function renderVariantDashboardHtml(fullDashboardHtml: string, variant: s
   html = replaceCounted(html, /(<meta name="twitter:url" content=")[^"]*(" \/>)/g, (_m, a, b) => `${a}${escHtml(meta.url)}${b}`, ONE, 'twitter:url');
 
   // hreflang cluster: alternates of THIS page live on the same subdomain;
-  // preserve the ?lang= suffix per entry.
+  // preserve the ?lang= suffix per entry. Anchor on the full variant's own
+  // URL (the built page's hreflang hrefs) so a fork rebrand of full.url
+  // doesn't strand this literal.
+  const fullUrlEscaped = VARIANT_META.full.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   html = replaceCounted(
     html,
-    /(<link rel="alternate" hreflang="[^"]+" href=")https:\/\/www\.worldmonitor\.app\/dashboard((?:\?[^"]*)?" \/>)/g,
+    new RegExp(`(<link rel="alternate" hreflang="[^"]+" href=")${fullUrlEscaped}((?:\\?[^"]*)?" \\/>)`, 'g'),
     (_m, a, b) => `${a}${escHtml(meta.url)}${b}`,
     { min: 1, max: 80 },
     'hreflang alternates',
